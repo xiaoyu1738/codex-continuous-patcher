@@ -1,0 +1,19 @@
+# Local Codex/Claude state and handoff artifacts
+.claude/
+.codex/
+thoughts/
+.tldr/
+
+# Python caches and local tooling state
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Local build/download output
+build/
+dist/
+*.egg-info/
+.venv/
+target/
