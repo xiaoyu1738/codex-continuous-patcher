@@ -5,7 +5,7 @@
 [English](README.en.md) · [MIT License](LICENSE)
 
 ![Platform](https://img.shields.io/badge/platform-Linux-111111.svg)
-![Tests](https://img.shields.io/badge/tests-41%20passed-16836a.svg)
+![Tests](https://img.shields.io/badge/tests-43%20passed-16836a.svg)
 ![License](https://img.shields.io/badge/license-MIT-c9a227.svg)
 
 ## 这是什么
@@ -60,7 +60,37 @@ cd codex-continuous-patcher
 4. 安装 `llm-tldr`、FAISS、Sentence Transformers 和 PyTorch。
 5. 启动 PostgreSQL/pgvector memory stack。
 
-Subagents 默认不注册，Braintrust 默认不启用。
+默认安装不会注册 Continuous 的 converted subagents；Braintrust 也默认不启用。
+
+## 安装配置
+
+仓库根目录的 [`codex-continuous.config.json`](codex-continuous.config.json) 控制可选组件：
+
+```json
+{
+  "subagents": { "enabled": false },
+  "dashboard": { "enabled": true }
+}
+```
+
+`subagents.enabled` 为 `true` 时，安装器才会转换并注册 Continuous 的 agent roles，同时打开 Codex 的 multi-agent 设置；为 `false` 时不会安装或注册这些 roles。`dashboard.enabled` 只控制是否复制本地 dashboard 脚本，不会自动启动网页服务。
+
+配置文件旁边运行安装器即可生效：
+
+```bash
+./install.sh
+```
+
+也可以指定其他 JSON 配置，或用命令行临时覆盖配置：
+
+```bash
+./install.sh --config /path/to/codex-continuous.config.json
+./install.sh --enable-subagents
+./install.sh --disable-subagents
+./install.sh --disable-dashboard
+```
+
+命令行参数优先于 JSON 配置。修改配置后重新运行安装器即可切换；当前本机默认配置保持 subagents 关闭。
 
 ## 语义搜索
 

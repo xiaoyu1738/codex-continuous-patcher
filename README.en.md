@@ -5,7 +5,7 @@ A Linux adapter that brings [Continuous-Claude-v3](https://github.com/parcadei/C
 [中文](README.md) · [MIT License](LICENSE)
 
 ![Platform](https://img.shields.io/badge/platform-Linux-111111.svg)
-![Tests](https://img.shields.io/badge/tests-41%20passed-16836a.svg)
+![Tests](https://img.shields.io/badge/tests-43%20passed-16836a.svg)
 ![License](https://img.shields.io/badge/license-MIT-c9a227.svg)
 
 ## What it is
@@ -60,7 +60,37 @@ The installer:
 4. Installs `llm-tldr`, FAISS, Sentence Transformers, and PyTorch.
 5. Starts the PostgreSQL/pgvector memory stack.
 
-Subagents are not registered and Braintrust is not enabled by default.
+Converted Continuous subagents are not installed or registered by default; Braintrust is also disabled by default.
+
+## Installation configuration
+
+The repository's [`codex-continuous.config.json`](codex-continuous.config.json) controls optional components:
+
+```json
+{
+  "subagents": { "enabled": false },
+  "dashboard": { "enabled": true }
+}
+```
+
+When `subagents.enabled` is `true`, the installer converts and registers the Continuous agent roles and enables Codex's multi-agent settings. When it is `false`, those roles are neither installed nor registered. `dashboard.enabled` only controls whether the local dashboard script is copied; it does not start a web server.
+
+Run the installer next to the configuration file:
+
+```bash
+./install.sh
+```
+
+You can also provide another JSON file or override its values for one installation:
+
+```bash
+./install.sh --config /path/to/codex-continuous.config.json
+./install.sh --enable-subagents
+./install.sh --disable-subagents
+./install.sh --disable-dashboard
+```
+
+CLI flags take precedence over JSON. Rerun the installer after changing the configuration to switch the feature set; the default local configuration keeps subagents disabled.
 
 ## Semantic search
 

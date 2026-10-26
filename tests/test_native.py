@@ -96,6 +96,75 @@ class NativeResourceTests(unittest.TestCase):
 
 
 class InstallerConfigTests(unittest.TestCase):
+    def test_installer_config_defaults_and_cli_precedence(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            missing = root / "missing.json"
+            self.assertEqual(
+                install.load_install_config(missing),
+                {"subagents_enabled": False, "dashboard_enabled": True},
+            )
+            with self.assertRaises(FileNotFoundError):
+                install.resolve_install_options(missing)
+            config = root / "codex-continuous.config.json"
+            config.write_text(
+                json.dumps({"subagents": {"enabled": True}, "dashboard": {"enabled": False}}),
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                install.resolve_install_options(config),
+                {"subagents_enabled": True, "dashboard_enabled": False},
+            )
+            self.assertEqual(
+                install.resolve_install_options(
+                    config, subagents_override=False, dashboard_override=True
+                ),
+                {"subagents_enabled": False, "dashboard_enabled": True},
+            )
+            (root / "invalid.json").write_text(
+                json.dumps({"subagents": {"enabled": "yes"}}), encoding="utf-8"
+            )
+            with self.assertRaises(RuntimeError):
+                install.load_install_config(root / "invalid.json")
+
+    def test_optional_resources_follow_install_switches(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            source_claude = source / ".claude"
+            (source_claude / "agents").mkdir(parents=True)
+            (source_claude / "agents" / "reviewer.md").write_text(
+                "---\nname: reviewer\ndescription: Review\n---\nReview changes.\n",
+                encoding="utf-8",
+            )
+            disabled_deployment = root / "disabled"
+            disabled = install.install_native_resources(
+                source,
+                disabled_deployment,
+                root / "codex-disabled",
+                enable_subagents=False,
+                enable_dashboard=False,
+            )
+            self.assertFalse(disabled["subagents_enabled"])
+            self.assertFalse(disabled["dashboard_enabled"])
+            self.assertEqual(disabled["agents"]["agents"], [])
+            self.assertFalse((disabled_deployment / "codex_continuous_dashboard.py").exists())
+            self.assertFalse((disabled_deployment / "codex-native" / "agents").exists())
+
+            enabled_deployment = root / "enabled"
+            enabled = install.install_native_resources(
+                source,
+                enabled_deployment,
+                root / "codex-enabled",
+                enable_subagents=True,
+                enable_dashboard=True,
+            )
+            self.assertTrue(enabled["subagents_enabled"])
+            self.assertTrue(enabled["dashboard_enabled"])
+            self.assertEqual(len(enabled["agents"]["agents"]), 1)
+            self.assertTrue((enabled_deployment / "codex_continuous_dashboard.py").exists())
+            self.assertTrue((enabled_deployment / "codex-native" / "agents").is_dir())
+
     def test_merge_is_idempotent_and_uninstall_restores_user_settings(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

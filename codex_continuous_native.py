@@ -252,7 +252,7 @@ def convert_agents(source_claude: Path, target_root: Path) -> dict[str, Any]:
     manifest = {
         "version": 1,
         "enabled": False,
-        "reason": "Role prompts are registered only when --enable-subagents is passed.",
+        "reason": "Role prompts are installed and registered only when the subagent option is enabled.",
         "agents": agents,
         "skipped": skipped,
     }

@@ -74,6 +74,9 @@ SETTING_MARKER = "codex-continuous-patcher-managed"
 LLM_TLDR_PACKAGE = "llm-tldr"
 LLM_TLDR_VERSION = "1.5.2"
 LLM_TLDR_VENV = "tldr-venv"
+INSTALL_CONFIG_NAME = "codex-continuous.config.json"
+DEFAULT_SUBAGENTS_ENABLED = False
+DEFAULT_DASHBOARD_ENABLED = True
 
 
 def tldr_runtime_venv(deployment: Path, *, ensure_link: bool = True) -> Path:
@@ -126,6 +129,66 @@ def default_source() -> Path:
 def default_codex_home() -> Path:
     configured = os.environ.get("CODEX_HOME")
     return Path(configured).expanduser().resolve() if configured else (Path.home() / ".codex")
+
+
+def default_install_config() -> Path:
+    """Return the optional public installer configuration next to this script."""
+
+    return Path(__file__).resolve().with_name(INSTALL_CONFIG_NAME)
+
+
+def load_install_config(path: Path | None = None, *, required: bool = False) -> dict[str, bool]:
+    """Load installer feature switches without reading Codex's config.toml.
+
+    The file is deliberately a small, secret-free JSON document. A missing
+    implicit file uses safe defaults; an explicitly supplied missing file is
+    an error so a typo cannot silently install the wrong feature set.
+    """
+
+    config_path = (path or default_install_config()).expanduser()
+    if not config_path.is_file():
+        if required:
+            raise FileNotFoundError(f"installer config does not exist: {config_path}")
+        return {
+            "subagents_enabled": DEFAULT_SUBAGENTS_ENABLED,
+            "dashboard_enabled": DEFAULT_DASHBOARD_ENABLED,
+        }
+    try:
+        raw = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise RuntimeError(f"cannot read installer config {config_path}: {error}") from error
+    if not isinstance(raw, dict):
+        raise RuntimeError(f"installer config {config_path} must contain a JSON object")
+
+    def read_switch(name: str, default: bool) -> bool:
+        section = raw.get(name, {})
+        if not isinstance(section, dict):
+            raise RuntimeError(f"installer config {config_path}: {name} must be an object")
+        value = section.get("enabled", default)
+        if not isinstance(value, bool):
+            raise RuntimeError(f"installer config {config_path}: {name}.enabled must be boolean")
+        return value
+
+    return {
+        "subagents_enabled": read_switch("subagents", DEFAULT_SUBAGENTS_ENABLED),
+        "dashboard_enabled": read_switch("dashboard", DEFAULT_DASHBOARD_ENABLED),
+    }
+
+
+def resolve_install_options(
+    config_path: Path | None = None,
+    *,
+    subagents_override: bool | None = None,
+    dashboard_override: bool | None = None,
+) -> dict[str, bool]:
+    """Resolve CLI overrides over the optional JSON installer configuration."""
+
+    options = load_install_config(config_path, required=config_path is not None)
+    if subagents_override is not None:
+        options["subagents_enabled"] = subagents_override
+    if dashboard_override is not None:
+        options["dashboard_enabled"] = dashboard_override
+    return options
 
 
 def backup_path(path: Path) -> Path:
@@ -717,13 +780,37 @@ def merge_agent_roles(config_path: Path, agents: dict[str, Any], enabled: bool) 
     return {"enabled": enabled, "installed": installed, "skipped": skipped}
 
 
-def install_native_resources(source: Path, deployment: Path, codex_home: Path) -> dict[str, Any]:
-    """Install Codex-discoverable skills and optional role/MCP resources."""
+def install_native_resources(
+    source: Path,
+    deployment: Path,
+    codex_home: Path,
+    *,
+    enable_subagents: bool = False,
+    enable_dashboard: bool = True,
+) -> dict[str, Any]:
+    """Install Codex-discoverable skills and selected optional resources."""
 
     native_dir = deployment / "codex-native"
     native_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     skills_result = convert_skills(source / ".claude", native_dir, codex_home=codex_home)
-    agents_result = convert_agents(source / ".claude", native_dir)
+    if enable_subagents:
+        agents_result = convert_agents(source / ".claude", native_dir)
+        agents_result["enabled"] = True
+        agents_result["reason"] = "Converted roles are registered in Codex by this installation."
+        (native_dir / "agents-manifest.json").write_text(
+            json.dumps(agents_result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
+    else:
+        agents_result = {
+            "version": 1,
+            "enabled": False,
+            "reason": "Subagent installation is disabled by installer configuration.",
+            "agents": [],
+            "skipped": [],
+        }
+        (native_dir / "agents-manifest.json").write_text(
+            json.dumps(agents_result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
     mcp_result = convert_mcp_config(
         source / ".claude", native_dir, codex_claude=deployment / ".claude"
     )
@@ -733,14 +820,14 @@ def install_native_resources(source: Path, deployment: Path, codex_home: Path) -
         "agents": agents_result,
         "mcp": mcp_result,
         "rules": merge_global_rules(source, codex_home),
-        "subagents_enabled": False,
+        "subagents_enabled": enable_subagents,
+        "dashboard_enabled": enable_dashboard,
     }
     (native_dir / "native-manifest.json").write_text(
         json.dumps(native_manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
     )
-    for script_name in (
+    scripts = [
         "codex_continuous_status.py",
-        "codex_continuous_dashboard.py",
         "codex_continuous_tldr_daemon.py",
         "codex_continuous_search_router.py",
         "codex_continuous_semantic_runtime.py",
@@ -748,7 +835,10 @@ def install_native_resources(source: Path, deployment: Path, codex_home: Path) -
         "codex_continuous_shell_router.py",
         "codex_continuous_semantic_warm.py",
         "codex_continuous_change_tracker.py",
-    ):
+    ]
+    if enable_dashboard:
+        scripts.append("codex_continuous_dashboard.py")
+    for script_name in scripts:
         script = Path(__file__).resolve().with_name(script_name)
         target = deployment / script_name
         shutil.copy2(script, target)
@@ -1385,6 +1475,7 @@ def install(
     setup_tldr: bool = True,
     enable_tldr_semantic: bool = False,
     tldr_semantic_binary: Path | None = None,
+    enable_dashboard: bool = True,
 ) -> int:
     source = source.resolve()
     codex_home.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -1406,7 +1497,13 @@ def install(
         )
     elif enable_tldr_semantic or tldr_semantic_binary:
         raise RuntimeError("TLDR semantic setup requires TLDR setup; remove --skip-tldr-setup")
-    native_manifest = install_native_resources(source, deployment, codex_home)
+    native_manifest = install_native_resources(
+        source,
+        deployment,
+        codex_home,
+        enable_subagents=enable_subagents,
+        enable_dashboard=enable_dashboard,
+    )
     config_path = codex_home / "config.toml"
     set_subagent_feature(config_path, enable_subagents)
     native_manifest["mcp"]["registration"] = merge_mcp_config(
@@ -1418,9 +1515,22 @@ def install(
     (deployment / "codex-native" / "native-manifest.json").write_text(
         json.dumps(native_manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
     )
+    (deployment / "install-config.json").write_text(
+        json.dumps(
+            {
+                "subagents": {"enabled": enable_subagents},
+                "dashboard": {"enabled": enable_dashboard},
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     log(
         f"converted {len(native_manifest['skills']['converted'])} skills; "
-        f"subagents {'enabled' if enable_subagents else 'disabled'}"
+        f"subagents {'enabled' if enable_subagents else 'disabled'}; "
+        f"dashboard {'installed' if enable_dashboard else 'omitted'}"
     )
     log(
         f"registered {len(native_manifest['mcp']['registration']['installed'])} MCP servers; "
@@ -1466,10 +1576,37 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="deploy files without running uv sync or starting PostgreSQL",
     )
-    parser.add_argument(
+    subagent_group = parser.add_mutually_exclusive_group()
+    subagent_group.add_argument(
         "--enable-subagents",
+        dest="subagents_override",
         action="store_true",
-        help="enable Codex agents and register converted roles (disabled by default)",
+        help="enable Codex agents and register converted roles (overrides installer config)",
+    )
+    subagent_group.add_argument(
+        "--disable-subagents",
+        dest="subagents_override",
+        action="store_false",
+        help="disable Codex agents and remove generated role registrations (overrides installer config)",
+    )
+    dashboard_group = parser.add_mutually_exclusive_group()
+    dashboard_group.add_argument(
+        "--enable-dashboard",
+        dest="dashboard_override",
+        action="store_true",
+        help="install the optional localhost dashboard (overrides installer config)",
+    )
+    dashboard_group.add_argument(
+        "--disable-dashboard",
+        dest="dashboard_override",
+        action="store_false",
+        help="omit the optional localhost dashboard (overrides installer config)",
+    )
+    parser.set_defaults(subagents_override=None, dashboard_override=None)
+    parser.add_argument(
+        "--config",
+        type=Path,
+        help=f"installer JSON config (default: {INSTALL_CONFIG_NAME} next to install.py)",
     )
     parser.add_argument("--uninstall", action="store_true", help="remove generated registrations and retain files as a backup")
     parser.add_argument("--skip-tldr-setup", action="store_true", help="do not install the deployment-local llm-tldr package")
@@ -1487,12 +1624,22 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.uninstall:
             return uninstall(args.codex_home)
+        options = resolve_install_options(
+            args.config.expanduser() if args.config else None,
+            subagents_override=args.subagents_override,
+            dashboard_override=args.dashboard_override,
+        )
+        log(
+            f"installer options: subagents {'enabled' if options['subagents_enabled'] else 'disabled'}, "
+            f"dashboard {'enabled' if options['dashboard_enabled'] else 'disabled'}"
+        )
         return install(
             args.source.expanduser(),
             args.codex_home.expanduser(),
             args.no_trust,
             setup_runtime=not args.skip_runtime_setup,
-            enable_subagents=args.enable_subagents,
+            enable_subagents=options["subagents_enabled"],
+            enable_dashboard=options["dashboard_enabled"],
             setup_tldr=not args.skip_tldr_setup,
             enable_tldr_semantic=args.enable_tldr_semantic,
             tldr_semantic_binary=args.tldr_semantic_binary.expanduser() if args.tldr_semantic_binary else None,
