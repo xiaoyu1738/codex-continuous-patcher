@@ -60,6 +60,7 @@ async function load(){
     row(runtime,'Memory',data.memory.available?'Connected':(data.memory.reason||'Unavailable'),data.memory.available?'ok':'warn');
     row(runtime,'TLDR',data.tldr_available?data.tldr_version:'Not installed',data.tldr_available?'ok':'warn');
     row(runtime,'TLDR semantic',data.tldr_semantic_enabled?'Enabled':'Lexical fallback',data.tldr_semantic_enabled?'ok':'warn');
+    row(runtime,'RLM',data.rlm_available?(data.rlm_version+' / '+data.rlm_skills_installed+' skills'):'Not installed',data.rlm_available?'ok':'warn');
     row(runtime,'Braintrust tracing',data.braintrust_enabled?'Enabled':'Disabled',data.braintrust_enabled?'warn':'ok');
     row(runtime,'Subagents',data.subagents_enabled?'Enabled':'Disabled',data.subagents_enabled?'warn':'ok');
     const resources=document.querySelector('#resources');resources.replaceChildren();

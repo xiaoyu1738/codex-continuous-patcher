@@ -5,7 +5,7 @@
 [English](README.en.md) · [MIT License](LICENSE)
 
 ![Platform](https://img.shields.io/badge/platform-Linux-111111.svg)
-![Tests](https://img.shields.io/badge/tests-43%20passed-16836a.svg)
+![Tests](https://img.shields.io/badge/tests-56%20passed-16836a.svg)
 ![License](https://img.shields.io/badge/license-MIT-c9a227.svg)
 
 ## 这是什么
@@ -32,6 +32,7 @@ flowchart LR
 - **后台预热**：SessionStart/resume 时，对小型 Git 项目异步建立结构缓存和语义索引；建索引期间普通搜索继续工作。
 - **跨仓库修改追踪**：Codex 在 repo-a 中工作、通过绝对路径修改已建立索引的 repo-b 时，tracker 会通知 repo-b 的 daemon。
 - **连续记忆**：通过 Docker PostgreSQL + pgvector 保存 learnings、决策和交接信息。
+- **RLM 盘外上下文**：集成 ContinuousClaudeV4.7 的 Ouros 持久化 REPL、`llm_call`/`agent_call` 递归桥接和 v4.7 skills/agents。Bash 在 PreToolUse 阶段被改写为 `codex_continuous_rlm.py --exec`，原命令的 stdout/stderr 在工具执行前就由 runner 捕获；超过 4000 字节时只把摘要卡片写入 stdout，完整结果保存到 `/tmp/codex-continuous-rlm/`，并透传原始 returncode。RLM 不再通过 PostToolUse 追加摘要卡片。
 - **安全默认值**：Subagents 和 Braintrust 默认关闭；语义搜索有源码数量、大小、`.tldrignore` 和低并行度限制。
 
 ## 快速开始
@@ -56,9 +57,10 @@ cd codex-continuous-patcher
 
 1. 把适配后的资源部署到 `$CODEX_HOME/continuous-claude-v3`。
 2. 注册 Codex lifecycle hooks，并保存 hook trust fingerprints。
-3. 安装 108 个 namespaced skills 和启用的 MCP 配置。
+3. 安装 108 个 v3 skills、9 个 v4.7 RLM skills 和启用的 MCP 配置。
 4. 安装 `llm-tldr`、FAISS、Sentence Transformers 和 PyTorch。
-5. 启动 PostgreSQL/pgvector memory stack。
+5. 安装 Ouros RLM 运行时和 `ouros-harness` 启动器。
+6. 启动 PostgreSQL/pgvector memory stack。
 
 默认安装不会注册 Continuous 的 converted subagents；Braintrust 也默认不启用。
 
@@ -141,6 +143,20 @@ thoughts/shared/handoffs/codex/auto-handoff-*.yaml
 
 后续 context window 会在同一个 Codex thread 中读取它，不会自动创建第二个聊天。
 
+## RLM 盘外上下文
+
+安装后可以直接运行 v4.7 的 Ouros harness：
+
+```bash
+ouros-harness --file /tmp/research.py \
+  --session auth-patterns \
+  --storage continuum/rlm/sessions
+```
+
+Ouros session 会持久化原始变量，`--load` 可恢复，`--fork` 可分支。大型 stdout 会写入 `continuum/rlm/sessions/outputs/`，终端只显示 artifact 路径、摘要和校验值。Bash runner 的边界发生在 PreToolUse；大型代码文件则由 v4.7 `tldr-read.mjs` 生成结构导航并限制首轮读取，精确内容通过 `offset`/`limit` 再取。当前 `.sh` 命令返回后立即删除；孤儿脚本和 artifact 会在下次 runner 启动时按默认 24 小时 TTL 清理，并受 256 MiB 总量上限约束。PostToolUse 不再承担 RLM 摘要逻辑。
+
+对 CUA/browser 类 stdio MCP server，安装器会在生成的 MCP catalog 中接入 `codex_continuous_mcp_filter.py`：它在 JSON-RPC 返回给 MCP client 前移除 `data:image/...;base64` 内容并裁剪超长文本。远程 HTTP MCP 不能由这个 stdio proxy 拦截，需要在 MCP 网关或服务端做同样的过滤。
+
 ## 状态与 Dashboard
 
 查看安装状态：
@@ -168,7 +184,7 @@ PYTHONPATH=. python3 -m unittest discover -s tests -v
 python3 -m py_compile *.py
 ```
 
-当前适配器测试覆盖 bridge、安装配置、搜索路由、语义预热、跨仓库修改追踪和 TLDR 兼容层。
+当前适配器测试覆盖 bridge、安装配置、搜索路由、语义预热、跨仓库修改追踪、TLDR 兼容层和 RLM artifact/hook/runtime 边界。
 
 ## 约束
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install Continuous Claude v3's hooks, memory runtime, and database for Codex.
+"""Install Continuous Claude v3 resources plus the v4.7 RLM runtime for Codex.
 
 The installer keeps the Claude assets and OPC memory runtime in a private,
 versioned directory under ``$CODEX_HOME``. Existing deployment directories and
@@ -77,6 +77,12 @@ LLM_TLDR_VENV = "tldr-venv"
 INSTALL_CONFIG_NAME = "codex-continuous.config.json"
 DEFAULT_SUBAGENTS_ENABLED = False
 DEFAULT_DASHBOARD_ENABLED = True
+RLM_SOURCE_DIR = Path(__file__).resolve().parent / "rlm"
+RLM_SOURCE_LABEL = "ContinuousClaudeV4.7"
+RLM_DEPLOYMENT_DIR = "rlm"
+RLM_SKILL_PREFIX = "cc-codex-continuous-v47"
+RLM_ROLE_PREFIX = "codex-continuous-v47"
+RLM_OUROS_VERSION = "0.0.7"
 
 
 def tldr_runtime_venv(deployment: Path, *, ensure_link: bool = True) -> Path:
@@ -195,6 +201,32 @@ def backup_path(path: Path) -> Path:
     return path.with_name(f"{path.name}.backup.{timestamp()}")
 
 
+def rlm_source() -> Path:
+    """Return the vendored Continuous Claude v4.7 RLM source tree."""
+
+    return RLM_SOURCE_DIR
+
+
+def copy_rlm_deployment(deployment: Path) -> None:
+    """Copy v4.7 RLM resources beside the v3 deployment resources."""
+
+    source = rlm_source()
+    if not source.is_dir():
+        raise FileNotFoundError(f"vendored RLM source is missing {source}")
+    target = deployment / RLM_DEPLOYMENT_DIR
+    shutil.copytree(
+        source,
+        target,
+        symlinks=True,
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".tldr", "continuum"),
+    )
+    for path in target.rglob("*.py"):
+        try:
+            os.chmod(path, 0o700)
+        except OSError:
+            pass
+
+
 def copy_deployment(source: Path, deployment: Path) -> Path | None:
     source_claude = source / ".claude"
     if not source_claude.is_dir():
@@ -228,6 +260,7 @@ def copy_deployment(source: Path, deployment: Path) -> Path | None:
                 symlinks=True,
                 ignore=shutil.ignore_patterns(".venv", ".cache", "__pycache__"),
             )
+    copy_rlm_deployment(deployment)
     if previous_deployment is not None:
         old_venv = previous_deployment / "opc" / ".venv"
         new_opc = deployment / "opc"
@@ -324,6 +357,112 @@ def _install_llm_tldr(deployment: Path) -> Path:
     if probe.returncode != 0:
         raise RuntimeError("installed llm-tldr cannot be imported")
     return python
+
+
+def _install_rlm_dependencies(python: Path) -> None:
+    """Install the v4.7 Ouros bridge in the shared managed Python runtime."""
+
+    uv = shutil.which("uv")
+    if not uv:
+        raise RuntimeError("uv is required to install the RLM runtime")
+    result = subprocess.run(
+        [
+            uv,
+            "pip",
+            "install",
+            "--python",
+            str(python),
+            "--upgrade",
+            f"ouros=={RLM_OUROS_VERSION}",
+            "aiohttp>=3.9",
+        ],
+        cwd=python.parent.parent,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip().splitlines()[-1:]
+        raise RuntimeError(f"installing RLM dependencies failed{': ' + detail[0] if detail else ''}")
+
+
+def _link_rlm_command(binary: Path) -> None:
+    """Expose the deployed Ouros harness without requiring a project copy."""
+
+    local_bin = Path.home() / ".local" / "bin"
+    local_bin.mkdir(mode=0o700, parents=True, exist_ok=True)
+    link = local_bin / "ouros-harness"
+    target = binary.resolve()
+    if link.is_symlink():
+        if link.resolve(strict=False) == target:
+            return
+        if "continuous-claude-v3" in str(link.resolve(strict=False)):
+            link.unlink(missing_ok=True)
+        else:
+            log(f"left existing command untouched: {link}")
+            return
+    if link.exists():
+        log(f"left existing command untouched: {link}")
+        return
+    try:
+        link.symlink_to(target)
+    except OSError as error:
+        log(f"could not add {link} to PATH: {error}")
+
+
+def install_rlm_runtime(deployment: Path, *, install_dependencies: bool = True) -> Path:
+    """Create the stable Ouros launcher for the vendored v4.7 runtime."""
+
+    harness = deployment / RLM_DEPLOYMENT_DIR / "tools" / "ouros_harness.py"
+    if not harness.is_file():
+        raise FileNotFoundError(f"deployed RLM harness is missing {harness}")
+    python = tldr_runtime_venv(deployment, ensure_link=False) / "bin" / "python"
+    if not python.is_file() and install_dependencies:
+        uv = shutil.which("uv")
+        if not uv:
+            raise RuntimeError("uv is required to create the RLM runtime")
+        rlm_venv = deployment / "rlm-venv"
+        result = subprocess.run(
+            [uv, "venv", str(rlm_venv)],
+            cwd=deployment,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        python = rlm_venv / "bin" / "python"
+        if result.returncode != 0 or not python.is_file():
+            detail = (result.stderr or result.stdout).strip().splitlines()[-1:]
+            raise RuntimeError(f"creating RLM virtualenv failed{': ' + detail[0] if detail else ''}")
+    if install_dependencies and python.is_file():
+        _install_rlm_dependencies(python)
+    if not python.is_file():
+        python = Path(sys.executable)
+    launcher = deployment / "bin" / "ouros-harness"
+    launcher.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    launcher.write_text(
+        "#!/bin/sh\n"
+        f"exec {shlex.quote(str(python))} {shlex.quote(str(harness))} \"$@\"\n",
+        encoding="utf-8",
+    )
+    os.chmod(launcher, 0o755)
+    _link_rlm_command(launcher)
+    (deployment / "rlm-runtime.json").write_text(
+        json.dumps(
+            {
+                "version": RLM_SOURCE_LABEL,
+                "ouros": RLM_OUROS_VERSION,
+                "harness": str(harness),
+                "launcher": str(launcher),
+                "dependencies_requested": install_dependencies,
+                "artifact_root": "continuum/rlm/",
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return launcher
 
 
 def install_tldr_runtime(
@@ -793,12 +932,34 @@ def install_native_resources(
     native_dir = deployment / "codex-native"
     native_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     skills_result = convert_skills(source / ".claude", native_dir, codex_home=codex_home)
+    rlm_claude = rlm_source() / "claude"
+    rlm_skills_result = convert_skills(
+        rlm_claude,
+        native_dir,
+        codex_home=codex_home,
+        skill_prefix=RLM_SKILL_PREFIX,
+        source_label=RLM_SOURCE_LABEL,
+        manifest_name="rlm-skills-manifest.json",
+    )
     if enable_subagents:
         agents_result = convert_agents(source / ".claude", native_dir)
         agents_result["enabled"] = True
         agents_result["reason"] = "Converted roles are registered in Codex by this installation."
         (native_dir / "agents-manifest.json").write_text(
             json.dumps(agents_result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
+        rlm_agents_result = convert_agents(
+            rlm_claude,
+            native_dir,
+            role_prefix=RLM_ROLE_PREFIX,
+            source_label=RLM_SOURCE_LABEL,
+            manifest_name="rlm-agents-manifest.json",
+            config_root="continuous-claude-v3/codex-native/agents",
+        )
+        rlm_agents_result["enabled"] = True
+        rlm_agents_result["reason"] = "v4.7 RLM roles are registered by this installation."
+        (native_dir / "rlm-agents-manifest.json").write_text(
+            json.dumps(rlm_agents_result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
         )
     else:
         agents_result = {
@@ -811,12 +972,36 @@ def install_native_resources(
         (native_dir / "agents-manifest.json").write_text(
             json.dumps(agents_result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
         )
+        rlm_agents_result = {
+            "version": 1,
+            "enabled": False,
+            "source": RLM_SOURCE_LABEL,
+            "reason": "Subagent installation is disabled by installer configuration.",
+            "agents": [],
+            "skipped": [],
+        }
+        (native_dir / "rlm-agents-manifest.json").write_text(
+            json.dumps(rlm_agents_result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
+    mcp_filter_source = Path(__file__).resolve().with_name("codex_continuous_mcp_filter.py")
+    mcp_filter_target = deployment / mcp_filter_source.name
+    shutil.copy2(mcp_filter_source, mcp_filter_target)
+    os.chmod(mcp_filter_target, 0o755)
     mcp_result = convert_mcp_config(
-        source / ".claude", native_dir, codex_claude=deployment / ".claude"
+        source / ".claude",
+        native_dir,
+        codex_claude=deployment / ".claude",
+        mcp_filter_path=deployment / "codex_continuous_mcp_filter.py",
     )
     native_manifest = {
         "version": 1,
         "skills": skills_result,
+        "rlm": {
+            "version": RLM_SOURCE_LABEL,
+            "skills": rlm_skills_result,
+            "agents": rlm_agents_result,
+            "deployment": str(deployment / RLM_DEPLOYMENT_DIR),
+        },
         "agents": agents_result,
         "mcp": mcp_result,
         "rules": merge_global_rules(source, codex_home),
@@ -835,6 +1020,7 @@ def install_native_resources(
         "codex_continuous_shell_router.py",
         "codex_continuous_semantic_warm.py",
         "codex_continuous_change_tracker.py",
+        "codex_continuous_rlm.py",
     ]
     if enable_dashboard:
         scripts.append("codex_continuous_dashboard.py")
@@ -1133,6 +1319,37 @@ def build_hooks(source: Path, deployment: Path) -> tuple[dict[str, Any], dict[st
         if generated_groups:
             generated[event] = generated_groups
 
+    # v4.7 RLM hooks are registered independently from the v3 source hooks.
+    # Both boundaries run before the tool: Read gets a bounded first window,
+    # while Bash is rewritten to execute through the output-capturing runner.
+    rlm_read_hook = deployment / RLM_DEPLOYMENT_DIR / "claude" / "hooks" / "tldr-read.mjs"
+    if rlm_read_hook.is_file():
+        hook_id = "codex_rlm_tldr_read"
+        command = f"node {shlex.quote(str(rlm_read_hook))}"
+        manifest["hooks"][hook_id] = {
+            "id": hook_id,
+            "event": "PreToolUse",
+            "matcher": "Read",
+            "command": command,
+            "timeout": 15,
+            "async": False,
+            "plugin": RLM_SOURCE_LABEL,
+        }
+
+    rlm_bash_hook = deployment / "codex_continuous_rlm.py"
+    if rlm_bash_hook.is_file():
+        hook_id = "codex_rlm_bash_pretool"
+        command = f"python3 {shlex.quote(str(rlm_bash_hook))} --pretool-bash"
+        manifest["hooks"][hook_id] = {
+            "id": hook_id,
+            "event": "PreToolUse",
+            "matcher": "Bash|Shell|Exec|exec_command|Command|Terminal",
+            "command": command,
+            "timeout": 10,
+            "async": False,
+            "plugin": RLM_SOURCE_LABEL,
+        }
+
     for event, hook_id, command_path, is_async in braintrust_hook_specs(deployment):
         if not command_path.is_file():
             continue
@@ -1234,7 +1451,7 @@ def build_hooks(source: Path, deployment: Path) -> tuple[dict[str, Any], dict[st
     manifest_path = deployment / "hooks-manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     os.chmod(manifest_path, 0o600)
-    return manifest, {"description": "Continuous Claude v3 adapted for Codex", "hooks": generated}
+    return manifest, {"description": "Continuous Claude v3 + v4.7 RLM adapted for Codex", "hooks": generated}
 
 
 def merge_hooks_file(path: Path, generated: dict[str, Any]) -> dict[str, Any]:
@@ -1442,7 +1659,7 @@ def uninstall(codex_home: Path) -> int:
                 owner = json.loads(owner_path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 owner = {}
-            if owner.get("source") != "Continuous-Claude-v3":
+            if owner.get("source") not in {"Continuous-Claude-v3", RLM_SOURCE_LABEL}:
                 continue
             if owner.get("installed_hash") == _tree_digest(skill_dir):
                 shutil.rmtree(skill_dir)
@@ -1453,7 +1670,7 @@ def uninstall(codex_home: Path) -> int:
 
     if deployment.exists():
         local_bin = Path.home() / ".local" / "bin"
-        for name in ("tldr", "tldr-daemon"):
+        for name in ("tldr", "tldr-daemon", "ouros-harness"):
             link = local_bin / name
             expected = (deployment / "bin" / name).resolve()
             if link.is_symlink() and link.resolve(strict=False) == expected:
@@ -1504,13 +1721,20 @@ def install(
         enable_subagents=enable_subagents,
         enable_dashboard=enable_dashboard,
     )
+    install_rlm_runtime(deployment, install_dependencies=setup_tldr or setup_runtime)
     config_path = codex_home / "config.toml"
     set_subagent_feature(config_path, enable_subagents)
     native_manifest["mcp"]["registration"] = merge_mcp_config(
         config_path, deployment / "codex-native" / "mcp-servers.toml"
     )
+    agent_catalog = {
+        "agents": [
+            *native_manifest["agents"].get("agents", []),
+            *native_manifest.get("rlm", {}).get("agents", {}).get("agents", []),
+        ]
+    }
     native_manifest["agents"]["registration"] = merge_agent_roles(
-        config_path, native_manifest["agents"], enable_subagents
+        config_path, agent_catalog, enable_subagents
     )
     (deployment / "codex-native" / "native-manifest.json").write_text(
         json.dumps(native_manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"

@@ -2,6 +2,7 @@
 .claude/
 .codex/
 thoughts/
+continuum/
 .tldr/
 
 # Python caches and local tooling state

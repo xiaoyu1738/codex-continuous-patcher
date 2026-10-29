@@ -104,7 +104,20 @@ def _tree_digest(directory: Path) -> str:
     return digest.hexdigest()
 
 
-def _skill_text(source_file: Path, target_name: str, original_name: str) -> str:
+def _adapt_rlm_runtime_text(content: str) -> str:
+    """Point v4.7 prompt examples at the installed Codex launcher."""
+
+    content = content.replace("python tools/ouros_harness.py", "ouros-harness")
+    return content.replace("tools/ouros_harness.py", "ouros-harness")
+
+
+def _skill_text(
+    source_file: Path,
+    target_name: str,
+    original_name: str,
+    *,
+    source_label: str = "Continuous-Claude-v3",
+) -> str:
     content = source_file.read_text(encoding="utf-8", errors="replace")
     metadata, body = _frontmatter(content)
     description = str(metadata.get("description") or f"Continuous Claude skill: {original_name}")
@@ -116,6 +129,15 @@ def _skill_text(source_file: Path, target_name: str, original_name: str) -> str:
             "Its semantic command is `tldr semantic index`; it stores the upstream FAISS index and metadata under "
             "`.tldr/cache/semantic/`.\n"
         )
+    if source_label == "ContinuousClaudeV4.7":
+        compatibility += (
+            "\n## Codex RLM runtime note\n\n"
+            "The v4.7 RLM runtime is installed as `ouros-harness` and keeps raw state "
+            "under `continuum/rlm/`. Bash is pre-wrapped through `rlm_runner.py`; "
+            "large command output is stored under `/tmp/codex-continuous-rlm/` and "
+            "only a bounded card is returned to the main context.\n"
+        )
+        body = _adapt_rlm_runtime_text(body)
     return (
         "---\n"
         f"name: {target_name}\n"
@@ -131,6 +153,9 @@ def convert_skills(
     target_root: Path,
     *,
     codex_home: Path | None = None,
+    skill_prefix: str = "cc-codex-continuous-v3",
+    source_label: str = "Continuous-Claude-v3",
+    manifest_name: str = "skills-manifest.json",
 ) -> dict[str, Any]:
     """Install complete skill directories, translating Codex frontmatter only."""
 
@@ -148,7 +173,7 @@ def convert_skills(
         content = source_file.read_text(encoding="utf-8", errors="replace")
         metadata, _ = _frontmatter(content)
         original_name = str(metadata.get("name") or directory.name)
-        name = f"cc-{NAMESPACE}-v3-{_slug(original_name, 34)}"
+        name = f"{skill_prefix}-{_slug(original_name, 34)}"
         target_dir = target_skills / name
         if target_dir.exists():
             owner_path = target_dir / SKILL_OWNER_FILE
@@ -173,12 +198,12 @@ def convert_skills(
             shutil.rmtree(temporary)
         shutil.copytree(source_file.parent, temporary, symlinks=True)
         (temporary / "SKILL.md").write_text(
-            _skill_text(source_file, name, original_name), encoding="utf-8"
+            _skill_text(source_file, name, original_name, source_label=source_label), encoding="utf-8"
         )
         source_hash = _tree_digest(temporary)
         (temporary / SKILL_OWNER_FILE).write_text(
             json.dumps(
-                {"source": "Continuous-Claude-v3", "source_name": directory.name, "installed_hash": source_hash},
+                {"source": source_label, "source_name": directory.name, "installed_hash": source_hash},
                 ensure_ascii=False,
                 indent=2,
             )
@@ -192,18 +217,26 @@ def convert_skills(
 
     manifest = {
         "version": 1,
-        "source": "Continuous-Claude-v3",
+        "source": source_label,
         "skills": converted,
         "skipped": skipped,
         "resources_copied": True,
     }
-    (target_root / "skills-manifest.json").write_text(
+    (target_root / manifest_name).write_text(
         json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
     )
     return {"converted": converted, "skipped": skipped}
 
 
-def convert_agents(source_claude: Path, target_root: Path) -> dict[str, Any]:
+def convert_agents(
+    source_claude: Path,
+    target_root: Path,
+    *,
+    role_prefix: str = NAMESPACE,
+    source_label: str = "Continuous-Claude-v3",
+    manifest_name: str = "agents-manifest.json",
+    config_root: str = "continuous-claude-v3/codex-native/agents",
+) -> dict[str, Any]:
     """Convert Claude agent prompts to Codex role config files."""
 
     source_agents = source_claude / "agents"
@@ -227,8 +260,10 @@ def convert_agents(source_claude: Path, target_root: Path) -> dict[str, Any]:
                 metadata, body = data, data["prompt"]
             else:
                 metadata, body = _frontmatter(source.read_text(encoding="utf-8", errors="replace"))
+            if source_label == "ContinuousClaudeV4.7":
+                body = _adapt_rlm_runtime_text(body)
             original_name = str(metadata.get("name") or source.stem)
-            role = f"{NAMESPACE}-{_slug(original_name)}"
+            role = f"{role_prefix}-{_slug(original_name)}"
             target = target_agents / f"{role}.toml"
             if target.exists():
                 role = f"{role}-{hashlib.sha256(source.name.encode()).hexdigest()[:8]}"
@@ -245,7 +280,7 @@ def convert_agents(source_claude: Path, target_root: Path) -> dict[str, Any]:
                     "name": role,
                     "description": description,
                     "source_file": source.name,
-                    "config_file": f"continuous-claude-v3/codex-native/agents/{target.name}",
+                    "config_file": f"{config_root}/{target.name}",
                     "path": str(target),
                 }
             )
@@ -253,10 +288,11 @@ def convert_agents(source_claude: Path, target_root: Path) -> dict[str, Any]:
         "version": 1,
         "enabled": False,
         "reason": "Role prompts are installed and registered only when the subagent option is enabled.",
+        "source": source_label,
         "agents": agents,
         "skipped": skipped,
     }
-    (target_root / "agents-manifest.json").write_text(
+    (target_root / manifest_name).write_text(
         json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
     )
     return manifest
@@ -308,6 +344,40 @@ def _server_values(raw: dict[str, Any], codex_claude: Path | None) -> tuple[dict
     return result, None
 
 
+def _mcp_filter_requested(source_name: str, raw: dict[str, Any]) -> bool:
+    """Enable the stdio response filter explicitly or for CUA-like servers."""
+
+    if "rlm_filter" in raw:
+        return raw.get("rlm_filter") is True
+    name = source_name.lower()
+    return any(marker in name for marker in ("cua", "computer-use", "browser", "chrome"))
+
+
+def _wrap_mcp_stdio(
+    source_name: str,
+    raw: dict[str, Any],
+    values: dict[str, Any],
+    wrapper: Path | None,
+) -> bool:
+    """Replace a selected stdio server command with the filtering proxy."""
+
+    if wrapper is None or not _mcp_filter_requested(source_name, raw):
+        return False
+    command = values.get("command")
+    args = values.get("args")
+    if not isinstance(command, str) or not isinstance(args, list):
+        return False
+    values["command"] = "python3"
+    values["args"] = [
+        str(wrapper),
+        "--command",
+        command,
+        "--args-json",
+        json.dumps([str(item) for item in args], ensure_ascii=False),
+    ]
+    return True
+
+
 def _render_server(name: str, config: dict[str, Any]) -> list[str]:
     lines = [f"[mcp_servers.{_toml_key(name)}]"]
     for key, value in config.items():
@@ -329,6 +399,7 @@ def convert_mcp_config(
     target_root: Path,
     *,
     codex_claude: Path | None = None,
+    mcp_filter_path: Path | None = None,
 ) -> dict[str, Any]:
     """Generate Codex-compatible MCP entries and a reviewable TOML catalog."""
 
@@ -352,7 +423,10 @@ def convert_mcp_config(
             skipped.append({"source": str(source_name), "reason": reason or "unsupported server"})
             continue
         name = f"{NAMESPACE}-{_slug(str(source_name))}"
+        filtered = _wrap_mcp_stdio(str(source_name), raw, values, mcp_filter_path)
         item = {"source": str(source_name), "name": name, "enabled": values["enabled"]}
+        if filtered:
+            item["rlm_filter"] = True
         converted.append(item)
         lines.extend(_render_server(name, values))
     target_root.mkdir(parents=True, exist_ok=True)

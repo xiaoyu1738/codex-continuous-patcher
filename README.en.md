@@ -5,7 +5,7 @@ A Linux adapter that brings [Continuous-Claude-v3](https://github.com/parcadei/C
 [中文](README.md) · [MIT License](LICENSE)
 
 ![Platform](https://img.shields.io/badge/platform-Linux-111111.svg)
-![Tests](https://img.shields.io/badge/tests-43%20passed-16836a.svg)
+![Tests](https://img.shields.io/badge/tests-56%20passed-16836a.svg)
 ![License](https://img.shields.io/badge/license-MIT-c9a227.svg)
 
 ## What it is
@@ -32,6 +32,7 @@ flowchart LR
 - **Background warming** — SessionStart/resume can asynchronously warm structural and semantic indexes for small Git worktrees while normal search remains responsive.
 - **Cross-repository tracking** — when Codex works in repo-a but an absolute-path command edits an indexed repo-b, the tracker notifies repo-b's daemon.
 - **Continuity memory** — stores learnings, decisions, and handoff data in Docker-backed PostgreSQL + pgvector.
+- **Off-context RLM** — ports ContinuousClaudeV4.7's Ouros persistent REPL, `llm_call`/`agent_call` recursion bridge, and v4.7 skills/agents. Bash is rewritten during PreToolUse to execute through `codex_continuous_rlm.py --exec`; the runner captures stdout/stderr before the tool result exists. Above 4,000 bytes it writes the full result under `/tmp/codex-continuous-rlm/`, prints only a bounded card to stdout, and preserves the original return code. RLM no longer appends summaries in PostToolUse.
 - **Safe defaults** — Subagents and Braintrust are disabled by default; semantic work is guarded by source-size, `.tldrignore`, and low-parallelism limits.
 
 ## Quick start
@@ -56,9 +57,10 @@ The installer:
 
 1. Deploys adapted resources under `$CODEX_HOME/continuous-claude-v3`.
 2. Registers Codex lifecycle hooks and persists hook trust fingerprints.
-3. Installs 108 namespaced skills and enabled MCP configuration.
+3. Installs 108 v3 skills, 9 v4.7 RLM skills, and enabled MCP configuration.
 4. Installs `llm-tldr`, FAISS, Sentence Transformers, and PyTorch.
-5. Starts the PostgreSQL/pgvector memory stack.
+5. Installs the Ouros RLM runtime and the `ouros-harness` launcher.
+6. Starts the PostgreSQL/pgvector memory stack.
 
 Converted Continuous subagents are not installed or registered by default; Braintrust is also disabled by default.
 
@@ -141,6 +143,20 @@ thoughts/shared/handoffs/codex/auto-handoff-*.yaml
 
 The next context window loads that state in the same Codex thread; it does not create a second chat.
 
+## Off-context RLM
+
+After installation, run the v4.7 Ouros harness directly:
+
+```bash
+ouros-harness --file /tmp/research.py \
+  --session auth-patterns \
+  --storage continuum/rlm/sessions
+```
+
+Ouros sessions persist raw variables; `--load` resumes them and `--fork` creates an independent branch. Large stdout is written to `continuum/rlm/sessions/outputs/`, while the terminal receives only an artifact path, bounded preview, and digest. The Bash boundary runs in PreToolUse. The temporary command script is deleted immediately after return; orphan scripts and artifacts are reaped on the next runner start with a default 24-hour TTL and a 256 MiB total cap. Large code reads use the v4.7 `tldr-read.mjs` hook to inject a structural map and cap the first read; use `offset`/`limit` for exact follow-up reads. PostToolUse no longer performs RLM summarization.
+
+For CUA/browser-like stdio MCP servers, the installer can register `codex_continuous_mcp_filter.py` in the generated MCP catalog. It removes `data:image/...;base64` payloads and clips oversized text from JSON-RPC responses before they reach the MCP client. Remote HTTP MCP servers cannot be intercepted by this stdio proxy and require filtering at the gateway or server.
+
 ## Status and dashboard
 
 Inspect the installed runtime:
@@ -168,7 +184,7 @@ PYTHONPATH=. python3 -m unittest discover -s tests -v
 python3 -m py_compile *.py
 ```
 
-The adapter test suite covers the bridge, installer configuration, search routing, semantic warming, cross-worktree change tracking, and TLDR compatibility layer.
+The adapter test suite covers the bridge, installer configuration, search routing, semantic warming, cross-worktree change tracking, TLDR compatibility, and RLM artifact/hook/runtime boundaries.
 
 ## Boundaries
 

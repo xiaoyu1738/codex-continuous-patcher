@@ -164,8 +164,11 @@ def adapt_input(raw: Any, event: str) -> dict[str, Any]:
                 tool_input.setdefault("file_paths", paths)
                 tool_input.setdefault("patch", tool_input["command"])
         data["tool_input"] = tool_input
-        if "tool_response" not in data and "tool_output" in data:
-            data["tool_response"] = data["tool_output"]
+        if "tool_response" not in data:
+            for response_key in ("tool_output", "tool_result", "output", "result"):
+                if response_key in data:
+                    data["tool_response"] = data[response_key]
+                    break
         data.setdefault("tool_use_id", data.get("call_id", ""))
 
     if event == "UserPromptSubmit" and not isinstance(data.get("prompt"), str):
@@ -638,6 +641,9 @@ def _merge_event_outputs(outputs: list[dict[str, Any]], event: str) -> dict[str,
     merged: dict[str, Any] = {}
     contexts: list[str] = []
     messages: list[str] = []
+    updated_input: dict[str, Any] = {}
+    permission_decision: str | None = None
+    permission_reason: str | None = None
     for output in outputs:
         if not isinstance(output, dict):
             continue
@@ -650,16 +656,31 @@ def _merge_event_outputs(outputs: list[dict[str, Any]], event: str) -> dict[str,
             context = specific.get("additionalContext")
             if context:
                 contexts.append(str(context))
+            update = specific.get("updatedInput")
+            if isinstance(update, dict):
+                updated_input.update(update)
+            decision = specific.get("permissionDecision")
+            if isinstance(decision, str) and decision:
+                permission_decision = decision
+            reason = specific.get("permissionDecisionReason")
+            if isinstance(reason, str) and reason:
+                permission_reason = reason
         if output.get("systemMessage"):
             messages.append(str(output["systemMessage"]))
         for key in ("continue", "stopReason", "suppressOutput"):
             if key in output:
                 merged[key] = output[key]
-    if contexts:
-        merged["hookSpecificOutput"] = {
-            "hookEventName": event,
-            "additionalContext": "\n\n".join(contexts)[-24000:],
-        }
+    if contexts or updated_input or permission_decision:
+        specific: dict[str, Any] = {"hookEventName": event}
+        if contexts:
+            specific["additionalContext"] = "\n\n".join(contexts)[-24000:]
+        if updated_input:
+            specific["updatedInput"] = updated_input
+        if permission_decision:
+            specific["permissionDecision"] = permission_decision
+        if permission_reason:
+            specific["permissionDecisionReason"] = permission_reason
+        merged["hookSpecificOutput"] = specific
     if messages:
         merged["systemMessage"] = "\n\n".join(messages)[-12000:]
     return merged

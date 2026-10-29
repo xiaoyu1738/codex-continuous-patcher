@@ -169,6 +169,22 @@ def collect(root: Path, deployment: Path, codex_home: Path) -> dict[str, Any]:
             except (OSError, json.JSONDecodeError):
                 manifests[name] = {}
     skill_manifest = manifests.get("skills-manifest.json", {})
+    rlm_skill_manifest: dict[str, Any] = {}
+    rlm_agent_manifest: dict[str, Any] = {}
+    rlm_runtime: dict[str, Any] = {}
+    for name, target in (
+        ("rlm-skills-manifest.json", rlm_skill_manifest),
+        ("rlm-agents-manifest.json", rlm_agent_manifest),
+        ("rlm-runtime.json", rlm_runtime),
+    ):
+        path = deployment / "codex-native" / name if name != "rlm-runtime.json" else deployment / name
+        if path.is_file():
+            try:
+                loaded = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    target.update(loaded)
+            except (OSError, json.JSONDecodeError):
+                pass
     agent_manifest = manifests.get("agents-manifest.json", {})
     mcp_manifest = manifests.get("mcp-manifest.json", {})
     mcp_registration: dict[str, Any] = {}
@@ -208,6 +224,10 @@ def collect(root: Path, deployment: Path, codex_home: Path) -> dict[str, Any]:
         "hooks_registered": _hook_count(codex_home / "hooks.json"),
         "subagents_enabled": _subagents_enabled(codex_home / "config.toml"),
         "skills_installed": len(skill_manifest.get("skills", [])),
+        "rlm_available": bool(rlm_runtime),
+        "rlm_version": rlm_runtime.get("version"),
+        "rlm_skills_installed": len(rlm_skill_manifest.get("skills", [])),
+        "rlm_agent_roles_available": len(rlm_agent_manifest.get("agents", [])),
         "skill_collisions": len(skill_manifest.get("skipped", [])),
         "agent_roles_available": len(agent_manifest.get("agents", [])),
         "agent_roles_registered": len(agent_registration.get("installed", [])),
@@ -244,6 +264,10 @@ def main() -> int:
     print(f"  hooks: {report['hooks_registered']}")
     print(f"  subagents: {'enabled' if report['subagents_enabled'] else 'disabled'}")
     print(f"  skills: {report['skills_installed']} installed ({report['skill_collisions']} skipped)")
+    print(
+        f"  RLM: {'available' if report['rlm_available'] else 'not installed'} "
+        f"({report['rlm_skills_installed']} skills, {report['rlm_agent_roles_available']} roles)"
+    )
     print(f"  agent roles: {report['agent_roles_registered']} registered / {report['agent_roles_available']} available")
     print(f"  MCP: {report['mcp_configured']} configured / {report['mcp_available']} available")
     print(f"  tldr: {'available' if report['tldr_available'] else 'not installed'} ({report['tldr_version'] or 'n/a'})")
