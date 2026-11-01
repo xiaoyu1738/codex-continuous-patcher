@@ -149,6 +149,8 @@ Codex 自动或手动 compaction 前，bridge 会写入：
 thoughts/shared/handoffs/codex/auto-handoff-*.yaml
 ```
 
+自动 handoff 按 Codex `session_id` 隔离，只会在同一个会话的 compaction 后加载，并且只保留 24 小时内的自动 checkpoint。新会话不会自动读取其他会话的 handoff；需要恢复长期保存的正式 handoff 时，使用 `/resume_handoff`。
+
 默认的 memory embedding 和 TLDR semantic index 都使用 `bge-large-en-v1.5`，模型文件共用：
 
 ```text

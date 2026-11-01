@@ -1344,38 +1344,82 @@ def adapt_learning_hooks(deployment: Path) -> None:
 
 
 def adapt_continuity_handoff_hook(deployment: Path) -> None:
-    """Avoid loading stale automatic handoffs after a new Codex session starts."""
+    """Scope automatic handoff loading to the current Codex session."""
 
     path = deployment / ".claude" / "hooks" / "dist" / "session-start-continuity.mjs"
     if not path.is_file():
         return
     contents = path.read_text(encoding="utf-8")
-    marker = "CODEX_CONTINUOUS_FRESH_AUTO_HANDOFFS"
+    marker = "CODEX_CONTINUOUS_SESSION_SCOPED_HANDOFFS"
     if marker in contents:
         return
-    needle = re.compile(
-        r"(?m)^(?P<indent>[ \t]*)const handoffFiles = fs\.readdirSync\(handoffDir\)"
-        r"\.filter\(\(f\) => isHandoffFile\(f\)\)\.sort\(\(a, b\) => \{\n"
+
+    session_needle = "  const sessionType = input.source || input.type;\n"
+    session_replacement = (
+        "  const sessionType = input.source || input.type;\n"
+        "  // CODEX_CONTINUOUS_SESSION_SCOPED_HANDOFFS: automatic checkpoints belong\n"
+        "  // to one Codex session. New sessions must use explicit /resume_handoff.\n"
+        "  const currentSessionShort = String(input.session_id || \"\").replace(/-/g, \"\").slice(0, 8).toLowerCase();\n"
+        "  const compactLike = sessionType === \"compact\" || sessionType === \"clear\";\n"
+        "  const standardCodexStart = !sessionType || [\"startup\", \"resume\", \"compact\", \"clear\"].includes(sessionType);\n"
     )
+    if session_needle not in contents:
+        log("could not adapt continuity hook: session type selector was not found")
+        return
+    adapted = contents.replace(session_needle, session_replacement, 1)
 
-    def replacement(match: re.Match[str]) -> str:
-        indent = match.group("indent")
-        return f'''{indent}// {marker}: automatic compact handoffs are short-lived checkpoints.
-{indent}// Explicit /resume_handoff remains available for older records.
-{indent}const handoffFiles = fs.readdirSync(handoffDir).filter((f) => {{
-{indent}  if (!isHandoffFile(f)) return false;
-{indent}  if (!f.startsWith("auto-handoff-")) return true;
-{indent}  const age = Date.now() - fs.statSync(path.join(handoffDir, f)).mtime.getTime();
-{indent}  return age >= 0 && age <= 24 * 60 * 60 * 1000;
-{indent}}}).sort((a, b) => {{
-'''
+    ledger_needle = re.compile(r"(?m)^[ \t]*let mostRecentLedger = null;\n")
+    ledger_replacement = (
+        "      let mostRecentLedger = null;\n"
+        "      if (compactLike && currentSessionShort) {\n"
+        "        const codexDir = path.join(handoffsDir, \"codex\");\n"
+        "        if (fs.existsSync(codexDir)) {\n"
+        "          const currentFiles = fs.readdirSync(codexDir).filter((f) => {\n"
+        "            if (!f.startsWith(\"auto-handoff-\") || !isHandoffFile(f)) return false;\n"
+        "            if (!f.includes(`-${currentSessionShort}-`)) return false;\n"
+        "            const age = Date.now() - fs.statSync(path.join(codexDir, f)).mtime.getTime();\n"
+        "            return age >= 0 && age <= 24 * 60 * 60 * 1000;\n"
+        "          }).sort((a, b) => {\n"
+        "            const statA = fs.statSync(path.join(codexDir, a));\n"
+        "            const statB = fs.statSync(path.join(codexDir, b));\n"
+        "            return statB.mtime.getTime() - statA.mtime.getTime();\n"
+        "          });\n"
+        "          if (currentFiles.length > 0) {\n"
+        "            const handoffPath = path.join(codexDir, currentFiles[0]);\n"
+        "            const content = fs.readFileSync(handoffPath, \"utf-8\");\n"
+        "            const yamlFields = extractYamlFields(content);\n"
+        "            if (yamlFields) {\n"
+        "              mostRecentLedger = {\n"
+        "                content,\n"
+        "                sessionName: \"codex\",\n"
+        "                handoffPath,\n"
+        "                mtime: fs.statSync(handoffPath).mtime.getTime(),\n"
+        "                goalSummary: (yamlFields.goal || \"No goal found\").substring(0, 100),\n"
+        "                currentFocus: yamlFields.now || \"Unknown\"\n"
+        "              };\n"
+        "            }\n"
+        "          }\n"
+        "        }\n"
+        "      }\n"
+    )
+    adapted, ledger_replacements = ledger_needle.subn(ledger_replacement, adapted, count=1)
+    if ledger_replacements == 0:
+        log("could not adapt continuity hook: ledger selector was not found")
+        return
 
-    adapted, replacements = needle.subn(replacement, contents, count=1)
-    if replacements == 0:
-        log("could not adapt continuity hook: expected handoff selector was not found")
+    loop_needle = re.compile(r"(?m)^[ \t]*for \(const sessionName of sessionDirs\) \{\n")
+    loop_replacement = (
+        "      // Do not scan another session when Codex owns the lifecycle event.\n"
+        "      if (standardCodexStart) {\n"
+        "        sessionDirs.length = 0;\n"
+        "      }\n"
+        "      for (const sessionName of sessionDirs) {\n"
+    )
+    adapted, loop_replacements = loop_needle.subn(loop_replacement, adapted, count=1)
+    if loop_replacements == 0:
+        log("could not adapt continuity hook: session directory loop was not found")
         return
     path.write_text(adapted, encoding="utf-8")
-
 
 def braintrust_hook_specs(
     deployment: Path, enabled: bool | None = None

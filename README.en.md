@@ -149,6 +149,8 @@ Before automatic or manual Codex compaction, the bridge writes:
 thoughts/shared/handoffs/codex/auto-handoff-*.yaml
 ```
 
+Automatic handoffs are scoped by the Codex `session_id`: only the current session's checkpoint is loaded after compaction, and automatic checkpoints expire after 24 hours. A new session does not load another session's handoff automatically; use `/resume_handoff` for long-lived explicit handoffs.
+
 Memory embeddings and TLDR semantic indexes use `bge-large-en-v1.5` by default and share one model cache:
 
 ```text

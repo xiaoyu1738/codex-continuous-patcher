@@ -383,14 +383,24 @@ class InstallerConfigTests(unittest.TestCase):
             hook = deployment / ".claude" / "hooks" / "dist" / "session-start-continuity.mjs"
             hook.parent.mkdir(parents=True)
             hook.write_text(
-                'const handoffFiles = fs.readdirSync(handoffDir).filter((f) => isHandoffFile(f)).sort((a, b) => {\n'
-                "  return 0;\n"
-                "});\n",
+                "async function main() {\n"
+                "  const input = JSON.parse(await readStdin());\n"
+                "  const sessionType = input.source || input.type;\n"
+                "  const handoffsDir = path.join(projectDir, \"thoughts\", \"shared\", \"handoffs\");\n"
+                "  let mostRecentLedger = null;\n"
+                "  const handoffFiles = fs.readdirSync(handoffDir).filter((f) => isHandoffFile(f)).sort((a, b) => {\n"
+                "    return 0;\n"
+                "  });\n"
+                "  for (const sessionName of sessionDirs) {\n"
+                "    if (mostRecentLedger) break;\n"
+                "  }\n"
+                "}\n",
                 encoding="utf-8",
             )
             install.adapt_continuity_handoff_hook(deployment)
             content = hook.read_text(encoding="utf-8")
-            self.assertIn("CODEX_CONTINUOUS_FRESH_AUTO_HANDOFFS", content)
+            self.assertIn("CODEX_CONTINUOUS_SESSION_SCOPED_HANDOFFS", content)
+            self.assertIn("currentSessionShort", content)
             self.assertIn("24 * 60 * 60 * 1000", content)
 
     def test_status_ignores_stale_automatic_handoffs(self) -> None:
