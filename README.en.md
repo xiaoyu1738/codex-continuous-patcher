@@ -173,6 +173,8 @@ Ouros sessions persist raw variables; `--load` resumes them and `--fork` creates
 
 For CUA/browser-like stdio MCP servers, the installer can register `codex_continuous_mcp_filter.py` in the generated MCP catalog. It removes `data:image/...;base64` payloads and clips oversized text from JSON-RPC responses before they reach the MCP client. Remote HTTP MCP servers cannot be intercepted by this stdio proxy and require filtering at the gateway or server.
 
+The Git MCP server is not pinned to `--repository .`: Codex app-server is a long-lived process whose cwd may belong to a different session, so that relative path can make the server exit before the handshake. Git tool calls pass the target repository through the required `repo_path` argument.
+
 ## Status and dashboard
 
 Inspect the installed runtime:

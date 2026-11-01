@@ -323,6 +323,17 @@ def _server_values(raw: dict[str, Any], codex_claude: Path | None) -> tuple[dict
         if not isinstance(args, list) or not all(isinstance(item, (str, int, float, bool)) for item in args):
             return None, "unsupported argument format"
         result["args"] = [_rewrite_server_path(str(item), codex_claude) for item in args]
+        if result["command"] == "uvx" and result["args"][:1] == ["mcp-server-git"]:
+            # Codex app-server is a long-lived daemon. Its cwd belongs to the
+            # daemon, not to the active thread's project, so the upstream
+            # `--repository .` makes this server exit before initialize when
+            # Codex was launched from another repository. Without a fixed
+            # repository the server keeps the required repo_path argument on
+            # each tool and can serve whichever project the thread is using.
+            for index, item in enumerate(result["args"][:-1]):
+                if item == "--repository" and not Path(result["args"][index + 1]).is_absolute():
+                    del result["args"][index : index + 2]
+                    break
         if (
             codex_claude
             and Path(command).name in {"python", "python3"}

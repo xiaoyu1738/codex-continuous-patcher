@@ -182,6 +182,28 @@ class InstallerConfigTests(unittest.TestCase):
             self.assertTrue((enabled_deployment / "codex_continuous_dashboard.py").exists())
             self.assertTrue((enabled_deployment / "codex-native" / "agents").is_dir())
 
+    def test_git_mcp_drops_relative_repository_for_codex_daemon(self) -> None:
+        values, error = native._server_values(
+            {
+                "command": "uvx",
+                "args": ["mcp-server-git", "--repository", "."],
+            },
+            None,
+        )
+        self.assertIsNone(error)
+        self.assertIsNotNone(values)
+        self.assertEqual(values["args"], ["mcp-server-git"])
+
+        values, error = native._server_values(
+            {
+                "command": "uvx",
+                "args": ["mcp-server-git", "--repository", "/tmp/repository"],
+            },
+            None,
+        )
+        self.assertIsNone(error)
+        self.assertEqual(values["args"], ["mcp-server-git", "--repository", "/tmp/repository"])
+
     def test_merge_is_idempotent_and_uninstall_restores_user_settings(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

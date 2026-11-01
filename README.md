@@ -173,6 +173,8 @@ Ouros session 会持久化原始变量，`--load` 可恢复，`--fork` 可分支
 
 对 CUA/browser 类 stdio MCP server，安装器会在生成的 MCP catalog 中接入 `codex_continuous_mcp_filter.py`：它在 JSON-RPC 返回给 MCP client 前移除 `data:image/...;base64` 内容并裁剪超长文本。远程 HTTP MCP 不能由这个 stdio proxy 拦截，需要在 MCP 网关或服务端做同样的过滤。
 
+Git MCP 不会固定使用 `--repository .`：Codex app-server 是常驻进程，它的工作目录可能不是当前会话的项目目录；固定相对路径会让 server 在握手前退出。Git 工具调用时传入目标仓库的 `repo_path`。
+
 ## 状态与 Dashboard
 
 查看安装状态：
