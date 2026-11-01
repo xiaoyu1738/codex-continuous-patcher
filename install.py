@@ -1343,6 +1343,40 @@ def adapt_learning_hooks(deployment: Path) -> None:
             path.write_text(adapted, encoding="utf-8")
 
 
+def adapt_continuity_handoff_hook(deployment: Path) -> None:
+    """Avoid loading stale automatic handoffs after a new Codex session starts."""
+
+    path = deployment / ".claude" / "hooks" / "dist" / "session-start-continuity.mjs"
+    if not path.is_file():
+        return
+    contents = path.read_text(encoding="utf-8")
+    marker = "CODEX_CONTINUOUS_FRESH_AUTO_HANDOFFS"
+    if marker in contents:
+        return
+    needle = re.compile(
+        r"(?m)^(?P<indent>[ \t]*)const handoffFiles = fs\.readdirSync\(handoffDir\)"
+        r"\.filter\(\(f\) => isHandoffFile\(f\)\)\.sort\(\(a, b\) => \{\n"
+    )
+
+    def replacement(match: re.Match[str]) -> str:
+        indent = match.group("indent")
+        return f'''{indent}// {marker}: automatic compact handoffs are short-lived checkpoints.
+{indent}// Explicit /resume_handoff remains available for older records.
+{indent}const handoffFiles = fs.readdirSync(handoffDir).filter((f) => {{
+{indent}  if (!isHandoffFile(f)) return false;
+{indent}  if (!f.startsWith("auto-handoff-")) return true;
+{indent}  const age = Date.now() - fs.statSync(path.join(handoffDir, f)).mtime.getTime();
+{indent}  return age >= 0 && age <= 24 * 60 * 60 * 1000;
+{indent}}}).sort((a, b) => {{
+'''
+
+    adapted, replacements = needle.subn(replacement, contents, count=1)
+    if replacements == 0:
+        log("could not adapt continuity hook: expected handoff selector was not found")
+        return
+    path.write_text(adapted, encoding="utf-8")
+
+
 def braintrust_hook_specs(
     deployment: Path, enabled: bool | None = None
 ) -> list[tuple[str, str, Path, bool]]:
@@ -1611,10 +1645,19 @@ def build_hooks(
         ]
         if not event_hooks:
             continue
-        timeout = min(
-            600,
-            max(30, sum(int(hook.get("timeout") or hook_timeout(event, {})) for hook in event_hooks)),
-        )
+        # Codex clamps SessionEnd/Interrupt handlers to three seconds. Use
+        # that limit in the generated file so startup stays warning-free;
+        # other lifecycle events retain the aggregate source-hook budget.
+        if event in {"SessionEnd", "Interrupt"}:
+            timeout = hook_timeout(event, {})
+        else:
+            timeout = min(
+                600,
+                max(
+                    30,
+                    sum(int(hook.get("timeout") or hook_timeout(event, {})) for hook in event_hooks),
+                ),
+            )
         bundled[event] = [
             {
                 "hooks": [
@@ -1887,6 +1930,7 @@ def install(
     previous_deployment = copy_deployment(source, deployment)
     ensure_learning_script_compatibility(deployment)
     adapt_learning_hooks(deployment)
+    adapt_continuity_handoff_hook(deployment)
     adapt_braintrust_plugin(deployment)
     bridge_source = Path(__file__).resolve().with_name("codex_continuous_bridge.py")
     bridge_target = deployment / bridge_source.name

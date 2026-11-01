@@ -34,7 +34,12 @@ def _latest_handoff(root: Path) -> dict[str, Any] | None:
     files = [
         path
         for path in handoff_root.glob("**/*")
-        if path.is_file() and path.suffix in {".yaml", ".yml", ".md"}
+        if path.is_file()
+        and path.suffix in {".yaml", ".yml", ".md"}
+        and (
+            not path.name.startswith("auto-handoff-")
+            or 0 <= datetime.now(timezone.utc).timestamp() - path.stat().st_mtime <= 24 * 60 * 60
+        )
     ]
     if not files:
         return None

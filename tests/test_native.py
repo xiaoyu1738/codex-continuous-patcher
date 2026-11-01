@@ -5,6 +5,7 @@ import os
 import tempfile
 import tomllib
 import unittest
+from datetime import datetime
 from unittest.mock import patch
 from pathlib import Path
 
@@ -310,6 +311,7 @@ class InstallerConfigTests(unittest.TestCase):
             source = root / "source"
             deployment = root / "deployment"
             (source / ".claude").mkdir(parents=True)
+            deployment.mkdir()
             (source / ".claude" / "settings.json").write_text(
                 json.dumps(
                     {
@@ -346,6 +348,61 @@ class InstallerConfigTests(unittest.TestCase):
             self.assertNotIn("braintrust", " ".join(manifest["hooks"]))
             self.assertFalse(any("braintrust" in str(h) for h in manifest["hooks"].values()))
             self.assertEqual(manifest["features"]["manual_compact"], True)
+
+    def test_session_end_bundle_uses_codex_three_second_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            deployment = root / "deployment"
+            (source / ".claude").mkdir(parents=True)
+            deployment.mkdir()
+            (source / ".claude" / "settings.json").write_text(
+                json.dumps(
+                    {
+                        "hooks": {
+                            "SessionEnd": [
+                                {
+                                    "hooks": [
+                                        {"type": "command", "command": "echo done"}
+                                    ]
+                                }
+                            ]
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            manifest, generated = install.build_hooks(source, deployment)
+            handler = generated["hooks"]["SessionEnd"][0]["hooks"][0]
+            self.assertEqual(handler["timeout"], 3)
+            self.assertEqual(manifest["hooks"]["sessionend_0_0"]["timeout"], 3)
+
+    def test_continuity_hook_ignores_stale_automatic_handoffs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            deployment = Path(temporary)
+            hook = deployment / ".claude" / "hooks" / "dist" / "session-start-continuity.mjs"
+            hook.parent.mkdir(parents=True)
+            hook.write_text(
+                'const handoffFiles = fs.readdirSync(handoffDir).filter((f) => isHandoffFile(f)).sort((a, b) => {\n'
+                "  return 0;\n"
+                "});\n",
+                encoding="utf-8",
+            )
+            install.adapt_continuity_handoff_hook(deployment)
+            content = hook.read_text(encoding="utf-8")
+            self.assertIn("CODEX_CONTINUOUS_FRESH_AUTO_HANDOFFS", content)
+            self.assertIn("24 * 60 * 60 * 1000", content)
+
+    def test_status_ignores_stale_automatic_handoffs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            handoffs = root / "thoughts/shared/handoffs/codex"
+            handoffs.mkdir(parents=True)
+            stale = handoffs / "auto-handoff-2026-10-26T10-58-13-old.yaml"
+            stale.write_text("type: auto-handoff\n", encoding="utf-8")
+            old_time = datetime.now().timestamp() - (8 * 24 * 60 * 60)
+            os.utime(stale, (old_time, old_time))
+            self.assertIsNone(status._latest_handoff(root))
 
     def test_cross_repository_change_tracker_is_registered(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

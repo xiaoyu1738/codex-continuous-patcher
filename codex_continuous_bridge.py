@@ -335,7 +335,9 @@ def _codex_compact_handoff(
     into the compacted context.
     """
 
-    trigger = str(data.get("trigger") or "auto").lower()
+    trigger = str(data.get("trigger") or data.get("source") or "auto").lower()
+    if trigger in {"user", "user_initiated", "manual_compact"}:
+        trigger = "manual"
     if trigger not in {"auto", "manual"} or (trigger == "manual" and not allow_manual):
         return None
     project_dir = Path(str(data.get("cwd") or os.getcwd())).expanduser()
@@ -584,7 +586,9 @@ def _safe_session_name(session_id: str) -> str:
 
 
 def _compact_message(data: dict[str, Any], handoff: Path) -> str:
-    trigger = str(data.get("trigger") or "auto").lower()
+    trigger = str(data.get("trigger") or data.get("source") or "auto").lower()
+    if trigger in {"user", "user_initiated", "manual_compact"}:
+        trigger = "manual"
     return f"[PreCompact:{trigger}] Created YAML handoff: {handoff}"
 
 
