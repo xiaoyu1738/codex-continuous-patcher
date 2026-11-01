@@ -185,6 +185,37 @@ class BridgeUnitTests(unittest.TestCase):
             self.assertIn("type: auto-handoff", content)
             self.assertIn("shell", content)
 
+    def test_manual_compaction_writes_yaml_handoff_and_can_be_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            transcript = root / "rollout.jsonl"
+            transcript.write_text(
+                json.dumps(
+                    {
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "Continue the work."}],
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            handoff = bridge._codex_compact_handoff(
+                {
+                    "cwd": str(root),
+                    "session_id": "session-manual",
+                    "trigger": "manual",
+                    "transcript_path": str(transcript),
+                }
+            )
+            self.assertIsNotNone(handoff)
+            assert handoff is not None
+            content = handoff.read_text(encoding="utf-8")
+            self.assertIn("trigger: codex-pre-compact-manual", content)
+            self.assertIn("Continue the work.", content)
+            self.assertIsNone(bridge._codex_compact_handoff(
+                {"cwd": str(root), "trigger": "manual"}, allow_manual=False
+            ))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -38,7 +38,7 @@ from codex_continuous_semantic_runtime import (  # noqa: E402
 WARM_LOCK_NAME = ".semantic-warm.lock"
 STRUCTURAL_LOCK_NAME = ".structural-warm.lock"
 STATUS_NAME = ".semantic-warm.json"
-DEFAULT_MODEL = "all-MiniLM-L6-v2"
+DEFAULT_MODEL = "bge-large-en-v1.5"
 MAX_CACHE_AGE_SECONDS = 24 * 60 * 60
 
 

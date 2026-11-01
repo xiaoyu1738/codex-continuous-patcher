@@ -61,7 +61,7 @@ class SearchRouterTests(unittest.TestCase):
     def test_semantic_model_defaults_to_small_model_but_is_overridable(self) -> None:
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("CODEX_CONTINUOUS_TLDR_MODEL", None)
-            self.assertEqual(router.DEFAULT_SEMANTIC_MODEL, "all-MiniLM-L6-v2")
+        self.assertEqual(router.DEFAULT_SEMANTIC_MODEL, "bge-large-en-v1.5")
         with patch.dict(os.environ, {"CODEX_CONTINUOUS_TLDR_MODEL": "bge-large-en-v1.5"}):
             self.assertEqual(os.environ["CODEX_CONTINUOUS_TLDR_MODEL"], "bge-large-en-v1.5")
 
@@ -76,8 +76,8 @@ class SearchRouterTests(unittest.TestCase):
         ):
             environment = semantic_environment()
         self.assertEqual(environment["HOME"], "/user")
-        self.assertEqual(environment["FASTEMBED_CACHE_DIR"], "/user/.cache/tldr/fastembed")
-        self.assertEqual(environment["HF_HOME"], "/user/.cache/tldr/fastembed")
+        self.assertEqual(environment["FASTEMBED_CACHE_DIR"], "/user/.cache/huggingface/fastembed")
+        self.assertEqual(environment["HF_HOME"], "/user/.cache/huggingface")
 
     def test_large_project_is_rejected_before_starting_semantic_child(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

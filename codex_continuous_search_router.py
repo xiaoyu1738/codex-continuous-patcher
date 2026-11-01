@@ -29,10 +29,9 @@ from codex_continuous_semantic_index import search as persistent_semantic_search
 
 
 CONTEXT_DIR = Path("/tmp/claude-search-context")
-# llm-tldr 1.5.2 ships these model keys. Use the smaller supported model for
-# automatic searches; an unrelated model name would be incompatible with the
-# dimensions stored in an existing FAISS index.
-DEFAULT_SEMANTIC_MODEL = "all-MiniLM-L6-v2"
+# Keep automatic index creation aligned with Continuous memory's BGE model.
+# Existing indexes still determine their own query dimensions through metadata.
+DEFAULT_SEMANTIC_MODEL = "bge-large-en-v1.5"
 
 
 def classify_query(pattern: str) -> str:
@@ -155,7 +154,9 @@ def _semantic_search(query: str, project: Path, top_k: int = 5) -> dict[str, Any
         # Let llm-tldr read the model recorded in metadata for an existing
         # index. The default is used by the automatic builder, not forced on
         # every query (which would break explicitly built BGE indexes).
-        model=os.environ.get("CODEX_CONTINUOUS_TLDR_MODEL") or None,
+        # Do not force a global model on an existing index. The upstream
+        # metadata must decide the query dimension for older indexes.
+        model=None,
         build_if_missing=False,
     )
     if persistent is not None:

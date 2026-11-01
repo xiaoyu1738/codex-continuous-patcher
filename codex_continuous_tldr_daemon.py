@@ -27,7 +27,7 @@ from codex_continuous_semantic_runtime import semantic_environment, semantic_loc
 
 
 SOCKET_VERSION = "python-llm-tldr-1.0"
-DEFAULT_SEMANTIC_MODEL = "all-MiniLM-L6-v2"
+DEFAULT_SEMANTIC_MODEL = "bge-large-en-v1.5"
 
 
 def _request_spec(payload: dict[str, Any]) -> tuple[str, dict[str, Any], bool] | None:

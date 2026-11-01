@@ -77,6 +77,11 @@ LLM_TLDR_VENV = "tldr-venv"
 INSTALL_CONFIG_NAME = "codex-continuous.config.json"
 DEFAULT_SUBAGENTS_ENABLED = False
 DEFAULT_DASHBOARD_ENABLED = True
+DEFAULT_AUTO_LEARNING_ENABLED = True
+DEFAULT_BRAINTRUST_ENABLED = False
+DEFAULT_MANUAL_COMPACT_ENABLED = True
+DEFAULT_SHARED_MODEL_CACHE_ENABLED = True
+DEFAULT_TLDR_MODEL = "bge-large-en-v1.5"
 RLM_SOURCE_DIR = Path(__file__).resolve().parent / "rlm"
 RLM_SOURCE_LABEL = "ContinuousClaudeV4.7"
 RLM_DEPLOYMENT_DIR = "rlm"
@@ -137,13 +142,21 @@ def default_codex_home() -> Path:
     return Path(configured).expanduser().resolve() if configured else (Path.home() / ".codex")
 
 
+def default_model_cache() -> Path:
+    """Return the one local Hugging Face cache shared by memory and TLDR."""
+
+    configured = os.environ.get("XDG_CACHE_HOME")
+    root = Path(configured).expanduser() if configured else Path.home() / ".cache"
+    return (root / "huggingface").resolve()
+
+
 def default_install_config() -> Path:
     """Return the optional public installer configuration next to this script."""
 
     return Path(__file__).resolve().with_name(INSTALL_CONFIG_NAME)
 
 
-def load_install_config(path: Path | None = None, *, required: bool = False) -> dict[str, bool]:
+def load_install_config(path: Path | None = None, *, required: bool = False) -> dict[str, Any]:
     """Load installer feature switches without reading Codex's config.toml.
 
     The file is deliberately a small, secret-free JSON document. A missing
@@ -158,6 +171,11 @@ def load_install_config(path: Path | None = None, *, required: bool = False) -> 
         return {
             "subagents_enabled": DEFAULT_SUBAGENTS_ENABLED,
             "dashboard_enabled": DEFAULT_DASHBOARD_ENABLED,
+            "auto_learning_enabled": DEFAULT_AUTO_LEARNING_ENABLED,
+            "braintrust_enabled": DEFAULT_BRAINTRUST_ENABLED,
+            "manual_compact_enabled": DEFAULT_MANUAL_COMPACT_ENABLED,
+            "shared_model_cache_enabled": DEFAULT_SHARED_MODEL_CACHE_ENABLED,
+            "tldr_model": DEFAULT_TLDR_MODEL,
         }
     try:
         raw = json.loads(config_path.read_text(encoding="utf-8"))
@@ -175,9 +193,43 @@ def load_install_config(path: Path | None = None, *, required: bool = False) -> 
             raise RuntimeError(f"installer config {config_path}: {name}.enabled must be boolean")
         return value
 
+    def read_nested_switch(section_name: str, name: str, default: bool) -> bool:
+        section = raw.get(section_name, {})
+        if not isinstance(section, dict):
+            raise RuntimeError(f"installer config {config_path}: {section_name} must be an object")
+        nested = section.get(name, {})
+        if not isinstance(nested, dict):
+            raise RuntimeError(
+                f"installer config {config_path}: {section_name}.{name} must be an object"
+            )
+        value = nested.get("enabled", default)
+        if not isinstance(value, bool):
+            raise RuntimeError(
+                f"installer config {config_path}: {section_name}.{name}.enabled must be boolean"
+            )
+        return value
+
+    tldr_section = raw.get("tldr", {})
+    if not isinstance(tldr_section, dict):
+        raise RuntimeError(f"installer config {config_path}: tldr must be an object")
+    tldr_model = tldr_section.get("model", DEFAULT_TLDR_MODEL)
+    if not isinstance(tldr_model, str) or not tldr_model.strip():
+        raise RuntimeError(f"installer config {config_path}: tldr.model must be a non-empty string")
+
     return {
         "subagents_enabled": read_switch("subagents", DEFAULT_SUBAGENTS_ENABLED),
         "dashboard_enabled": read_switch("dashboard", DEFAULT_DASHBOARD_ENABLED),
+        "auto_learning_enabled": read_nested_switch(
+            "memory", "auto_learning", DEFAULT_AUTO_LEARNING_ENABLED
+        ),
+        "braintrust_enabled": read_switch("braintrust", DEFAULT_BRAINTRUST_ENABLED),
+        "manual_compact_enabled": read_nested_switch(
+            "handoff", "manual_compact", DEFAULT_MANUAL_COMPACT_ENABLED
+        ),
+        "shared_model_cache_enabled": read_nested_switch(
+            "memory", "shared_model_cache", DEFAULT_SHARED_MODEL_CACHE_ENABLED
+        ),
+        "tldr_model": tldr_model.strip().split("/")[-1],
     }
 
 
@@ -186,7 +238,7 @@ def resolve_install_options(
     *,
     subagents_override: bool | None = None,
     dashboard_override: bool | None = None,
-) -> dict[str, bool]:
+) -> dict[str, Any]:
     """Resolve CLI overrides over the optional JSON installer configuration."""
 
     options = load_install_config(config_path, required=config_path is not None)
@@ -512,7 +564,13 @@ def install_tldr_runtime(
     return wrapper
 
 
-def write_runtime_env(deployment: Path, previous_deployment: Path | None = None) -> Path:
+def write_runtime_env(
+    deployment: Path,
+    previous_deployment: Path | None = None,
+    *,
+    tldr_model: str = DEFAULT_TLDR_MODEL,
+    shared_model_cache_enabled: bool = DEFAULT_SHARED_MODEL_CACHE_ENABLED,
+) -> Path:
     """Write the default local PostgreSQL/embedding configuration.
 
     Keep the file in both the deployment root (for Compose) and ``opc/`` (for
@@ -521,6 +579,7 @@ def write_runtime_env(deployment: Path, previous_deployment: Path | None = None)
     point at a remote PostgreSQL instance before rerunning the installer.
     """
 
+    model_cache = default_model_cache()
     defaults = {
         "POSTGRES_USER": "claude",
         "POSTGRES_PASSWORD": "claude_dev",
@@ -530,6 +589,8 @@ def write_runtime_env(deployment: Path, previous_deployment: Path | None = None)
         "AGENTICA_MEMORY_BACKEND": "postgres",
         "EMBEDDING_PROVIDER": "local",
         "EMBEDDING_MODEL": "BAAI/bge-large-en-v1.5",
+        "CODEX_CONTINUOUS_TLDR_MODEL": tldr_model,
+        "CODEX_CONTINUOUS_SHARED_MODEL_CACHE": "true" if shared_model_cache_enabled else "false",
         "TRACE_TO_BRAINTRUST": "false",
         "BRAINTRUST_CC_PROJECT": "codex",
         "CODEX_CONTINUOUS_DISABLE_SUBAGENTS": "1",
@@ -552,6 +613,20 @@ def write_runtime_env(deployment: Path, previous_deployment: Path | None = None)
             key, value = line.split("=", 1)
             existing[key.strip()] = value.strip()
     merged = {**defaults, **existing}
+    # These fields are controlled by the public installer configuration.
+    merged["CODEX_CONTINUOUS_TLDR_MODEL"] = tldr_model
+    merged["CODEX_CONTINUOUS_SHARED_MODEL_CACHE"] = (
+        "true" if shared_model_cache_enabled else "false"
+    )
+    if shared_model_cache_enabled:
+        merged["CODEX_CONTINUOUS_MODEL_CACHE"] = str(model_cache)
+    else:
+        merged.pop("CODEX_CONTINUOUS_MODEL_CACHE", None)
+    # HF_HOME was briefly emitted by early builds of the shared-cache change.
+    # Bridge hooks now scope this variable so memory and standalone TLDR can
+    # keep separate defaults when shared caching is disabled.
+    if merged.get("HF_HOME") == str(model_cache):
+        merged.pop("HF_HOME", None)
     contents = "# Generated by codex-continuous-patcher; customize as needed.\n"
     contents += "\n".join(f"{key}={value}" for key, value in merged.items()) + "\n"
     root_env.write_text(contents, encoding="utf-8")
@@ -1237,8 +1312,47 @@ def adapt_braintrust_plugin(deployment: Path) -> None:
         script.write_text(content, encoding="utf-8")
 
 
-def braintrust_hook_specs(deployment: Path) -> list[tuple[str, str, Path, bool]]:
-    if os.environ.get("CODEX_CONTINUOUS_ENABLE_BRAINTRUST", "").lower() not in {"1", "true", "yes"}:
+def ensure_learning_script_compatibility(deployment: Path) -> None:
+    """Expose the legacy learning-hook script path in the deployed OPC tree."""
+
+    scripts = deployment / "opc" / "scripts"
+    target = scripts / "core" / "store_learning.py"
+    compatibility = scripts / "store_learning.py"
+    if not target.is_file() or compatibility.exists() or compatibility.is_symlink():
+        return
+    try:
+        compatibility.symlink_to(Path("core") / target.name)
+    except OSError as error:
+        log(f"could not create learning script compatibility link: {error}")
+
+
+def adapt_learning_hooks(deployment: Path) -> None:
+    """Point copied learning hooks at the deployment OPC runtime."""
+
+    hooks_dir = deployment / ".claude" / "hooks" / "dist"
+    for name in ("auto-learning.mjs", "user-confirm-learning.mjs", "subagent-learning.mjs"):
+        path = hooks_dir / name
+        if not path.is_file():
+            continue
+        contents = path.read_text(encoding="utf-8")
+        adapted = contents.replace(
+            'const opcDir = join(projectDir, "opc");',
+            'const opcDir = process.env.CLAUDE_OPC_DIR || join(projectDir, "opc");',
+        )
+        if adapted != contents:
+            path.write_text(adapted, encoding="utf-8")
+
+
+def braintrust_hook_specs(
+    deployment: Path, enabled: bool | None = None
+) -> list[tuple[str, str, Path, bool]]:
+    if enabled is None:
+        enabled = os.environ.get("CODEX_CONTINUOUS_ENABLE_BRAINTRUST", "").lower() in {
+            "1",
+            "true",
+            "yes",
+        }
+    if not enabled:
         return []
     hooks = deployment / ".claude" / "plugins" / "braintrust-tracing" / "hooks"
     return [
@@ -1263,12 +1377,32 @@ def bridge_event_command(deployment: Path, event: str) -> str:
     )
 
 
-def build_hooks(source: Path, deployment: Path) -> tuple[dict[str, Any], dict[str, Any]]:
+def build_hooks(
+    source: Path,
+    deployment: Path,
+    *,
+    enable_auto_learning: bool = True,
+    enable_braintrust: bool | None = None,
+    enable_manual_compact: bool = True,
+    enable_subagents: bool = False,
+) -> tuple[dict[str, Any], dict[str, Any]]:
     settings = load_settings(source)
+    if enable_braintrust is None:
+        enable_braintrust = os.environ.get("CODEX_CONTINUOUS_ENABLE_BRAINTRUST", "").lower() in {
+            "1",
+            "true",
+            "yes",
+        }
     manifest: dict[str, Any] = {
         "version": 1,
         "deployment_root": str(deployment),
         "source": str(source),
+        "features": {
+            "auto_learning": enable_auto_learning,
+            "braintrust": enable_braintrust,
+            "manual_compact": enable_manual_compact,
+            "subagents": enable_subagents,
+        },
         "hooks": {},
     }
     generated: dict[str, list[dict[str, Any]]] = {}
@@ -1294,6 +1428,8 @@ def build_hooks(source: Path, deployment: Path) -> tuple[dict[str, Any], dict[st
                 command = handler.get("command")
                 if not isinstance(command, str) or not command.strip():
                     continue
+                if not enable_braintrust and "braintrust" in command.lower():
+                    continue
                 hook_id = f"{event.lower()}_{group_index}_{handler_index}"
                 timeout = effective_hook_timeout(event, handler, command)
                 manifest["hooks"][hook_id] = {
@@ -1318,6 +1454,48 @@ def build_hooks(source: Path, deployment: Path) -> tuple[dict[str, Any], dict[st
                 )
         if generated_groups:
             generated[event] = generated_groups
+
+    learning_hooks = deployment / ".claude" / "hooks" / "dist"
+    if enable_auto_learning:
+        learning_specs = [
+            (
+                "PostToolUse",
+                "codex_auto_learning",
+                "Edit|Write|MultiEdit|Bash",
+                learning_hooks / "auto-learning.mjs",
+                30,
+            ),
+            (
+                "UserPromptSubmit",
+                "codex_user_confirm_learning",
+                None,
+                learning_hooks / "user-confirm-learning.mjs",
+                20,
+            ),
+        ]
+        if enable_subagents:
+            learning_specs.append(
+                (
+                    "SubagentStop",
+                    "codex_subagent_learning",
+                    None,
+                    learning_hooks / "subagent-learning.mjs",
+                    30,
+                )
+            )
+        for event, hook_id, matcher, command_path, timeout in learning_specs:
+            if not command_path.is_file():
+                continue
+            command = f"node {shlex.quote(str(command_path))}"
+            manifest["hooks"][hook_id] = {
+                "id": hook_id,
+                "event": event,
+                "matcher": matcher,
+                "command": command,
+                "timeout": timeout,
+                "async": False,
+                "plugin": "codex-continuous-patcher",
+            }
 
     # v4.7 RLM hooks are registered independently from the v3 source hooks.
     # Both boundaries run before the tool: Read gets a bounded first window,
@@ -1350,7 +1528,9 @@ def build_hooks(source: Path, deployment: Path) -> tuple[dict[str, Any], dict[st
             "plugin": RLM_SOURCE_LABEL,
         }
 
-    for event, hook_id, command_path, is_async in braintrust_hook_specs(deployment):
+    for event, hook_id, command_path, is_async in braintrust_hook_specs(
+        deployment, enable_braintrust
+    ):
         if not command_path.is_file():
             continue
         command = f"bash {shlex.quote(str(command_path))}"
@@ -1693,6 +1873,11 @@ def install(
     enable_tldr_semantic: bool = False,
     tldr_semantic_binary: Path | None = None,
     enable_dashboard: bool = True,
+    enable_auto_learning: bool = DEFAULT_AUTO_LEARNING_ENABLED,
+    enable_braintrust: bool = DEFAULT_BRAINTRUST_ENABLED,
+    enable_manual_compact: bool = DEFAULT_MANUAL_COMPACT_ENABLED,
+    shared_model_cache_enabled: bool = DEFAULT_SHARED_MODEL_CACHE_ENABLED,
+    tldr_model: str = DEFAULT_TLDR_MODEL,
 ) -> int:
     source = source.resolve()
     codex_home.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -1700,12 +1885,19 @@ def install(
     hooks_path = codex_home / "hooks.json"
     config_path = codex_home / "config.toml"
     previous_deployment = copy_deployment(source, deployment)
+    ensure_learning_script_compatibility(deployment)
+    adapt_learning_hooks(deployment)
     adapt_braintrust_plugin(deployment)
     bridge_source = Path(__file__).resolve().with_name("codex_continuous_bridge.py")
     bridge_target = deployment / bridge_source.name
     shutil.copy2(bridge_source, bridge_target)
     os.chmod(bridge_target, 0o755)
-    write_runtime_env(deployment, previous_deployment)
+    write_runtime_env(
+        deployment,
+        previous_deployment,
+        tldr_model=tldr_model,
+        shared_model_cache_enabled=shared_model_cache_enabled,
+    )
     if setup_tldr:
         install_tldr_runtime(
             deployment,
@@ -1744,6 +1936,13 @@ def install(
             {
                 "subagents": {"enabled": enable_subagents},
                 "dashboard": {"enabled": enable_dashboard},
+                "braintrust": {"enabled": enable_braintrust},
+                "memory": {
+                    "auto_learning": {"enabled": enable_auto_learning},
+                    "shared_model_cache": {"enabled": shared_model_cache_enabled},
+                },
+                "handoff": {"manual_compact": {"enabled": enable_manual_compact}},
+                "tldr": {"model": tldr_model},
             },
             indent=2,
             ensure_ascii=False,
@@ -1763,7 +1962,14 @@ def install(
     if setup_runtime:
         sync_python_runtime(deployment)
         start_database_stack(deployment)
-    _, generated = build_hooks(source, deployment)
+    _, generated = build_hooks(
+        source,
+        deployment,
+        enable_auto_learning=enable_auto_learning,
+        enable_braintrust=enable_braintrust,
+        enable_manual_compact=enable_manual_compact,
+        enable_subagents=enable_subagents,
+    )
     if hooks_path.exists():
         backup = backup_path(hooks_path)
         shutil.copy2(hooks_path, backup)
@@ -1855,7 +2061,11 @@ def main(argv: list[str] | None = None) -> int:
         )
         log(
             f"installer options: subagents {'enabled' if options['subagents_enabled'] else 'disabled'}, "
-            f"dashboard {'enabled' if options['dashboard_enabled'] else 'disabled'}"
+            f"dashboard {'enabled' if options['dashboard_enabled'] else 'disabled'}, "
+            f"auto-learning {'enabled' if options['auto_learning_enabled'] else 'disabled'}, "
+            f"Braintrust {'enabled' if options['braintrust_enabled'] else 'disabled'}, "
+            f"manual compact {'enabled' if options['manual_compact_enabled'] else 'disabled'}, "
+            f"model cache {'shared' if options['shared_model_cache_enabled'] else 'separate'}"
         )
         return install(
             args.source.expanduser(),
@@ -1867,6 +2077,11 @@ def main(argv: list[str] | None = None) -> int:
             setup_tldr=not args.skip_tldr_setup,
             enable_tldr_semantic=args.enable_tldr_semantic,
             tldr_semantic_binary=args.tldr_semantic_binary.expanduser() if args.tldr_semantic_binary else None,
+            enable_auto_learning=options["auto_learning_enabled"],
+            enable_braintrust=options["braintrust_enabled"],
+            enable_manual_compact=options["manual_compact_enabled"],
+            shared_model_cache_enabled=options["shared_model_cache_enabled"],
+            tldr_model=options["tldr_model"],
         )
     except Exception as error:  # noqa: BLE001  # CLI reports a concise installation error
         print(f"[codex-continuous] installation failed: {error}", file=sys.stderr)

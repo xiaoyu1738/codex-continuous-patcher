@@ -102,25 +102,41 @@ class InstallerConfigTests(unittest.TestCase):
             missing = root / "missing.json"
             self.assertEqual(
                 install.load_install_config(missing),
-                {"subagents_enabled": False, "dashboard_enabled": True},
+                {
+                    "subagents_enabled": False,
+                    "dashboard_enabled": True,
+                    "auto_learning_enabled": True,
+                    "braintrust_enabled": False,
+                    "manual_compact_enabled": True,
+                    "shared_model_cache_enabled": True,
+                    "tldr_model": "bge-large-en-v1.5",
+                },
             )
             with self.assertRaises(FileNotFoundError):
                 install.resolve_install_options(missing)
             config = root / "codex-continuous.config.json"
             config.write_text(
-                json.dumps({"subagents": {"enabled": True}, "dashboard": {"enabled": False}}),
+                json.dumps(
+                    {
+                        "subagents": {"enabled": True},
+                        "dashboard": {"enabled": False},
+                        "memory": {"auto_learning": {"enabled": False}},
+                        "tldr": {"model": "BAAI/bge-large-en-v1.5"},
+                    }
+                ),
                 encoding="utf-8",
             )
-            self.assertEqual(
-                install.resolve_install_options(config),
-                {"subagents_enabled": True, "dashboard_enabled": False},
+            options = install.resolve_install_options(config)
+            self.assertTrue(options["subagents_enabled"])
+            self.assertFalse(options["dashboard_enabled"])
+            self.assertFalse(options["auto_learning_enabled"])
+            self.assertEqual(options["tldr_model"], "bge-large-en-v1.5")
+            overridden = install.resolve_install_options(
+                config, subagents_override=False, dashboard_override=True
             )
-            self.assertEqual(
-                install.resolve_install_options(
-                    config, subagents_override=False, dashboard_override=True
-                ),
-                {"subagents_enabled": False, "dashboard_enabled": True},
-            )
+            self.assertFalse(overridden["subagents_enabled"])
+            self.assertTrue(overridden["dashboard_enabled"])
+            self.assertFalse(overridden["auto_learning_enabled"])
             (root / "invalid.json").write_text(
                 json.dumps({"subagents": {"enabled": "yes"}}), encoding="utf-8"
             )
@@ -287,6 +303,49 @@ class InstallerConfigTests(unittest.TestCase):
             manifest, generated = install.build_hooks(source, deployment)
             self.assertEqual(manifest["hooks"]["pretooluse_0_0"]["timeout"], 60)
             self.assertEqual(generated["hooks"]["PreToolUse"][0]["hooks"][0]["timeout"], 60)
+
+    def test_learning_hooks_are_registered_without_braintrust_or_subagents(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            deployment = root / "deployment"
+            (source / ".claude").mkdir(parents=True)
+            (source / ".claude" / "settings.json").write_text(
+                json.dumps(
+                    {
+                        "hooks": {
+                            "SessionStart": [
+                                {
+                                    "hooks": [
+                                        {
+                                            "type": "command",
+                                            "command": "bash braintrust/session_start.sh",
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            hooks = deployment / ".claude" / "hooks" / "dist"
+            hooks.mkdir(parents=True)
+            for name in ("auto-learning.mjs", "user-confirm-learning.mjs"):
+                (hooks / name).write_text("// hook\n", encoding="utf-8")
+            manifest, _ = install.build_hooks(
+                source,
+                deployment,
+                enable_auto_learning=True,
+                enable_braintrust=False,
+                enable_manual_compact=True,
+                enable_subagents=False,
+            )
+            self.assertIn("codex_auto_learning", manifest["hooks"])
+            self.assertIn("codex_user_confirm_learning", manifest["hooks"])
+            self.assertNotIn("braintrust", " ".join(manifest["hooks"]))
+            self.assertFalse(any("braintrust" in str(h) for h in manifest["hooks"].values()))
+            self.assertEqual(manifest["features"]["manual_compact"], True)
 
     def test_cross_repository_change_tracker_is_registered(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

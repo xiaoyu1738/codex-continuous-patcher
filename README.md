@@ -71,11 +71,19 @@ cd codex-continuous-patcher
 ```json
 {
   "subagents": { "enabled": false },
-  "dashboard": { "enabled": true }
+  "dashboard": { "enabled": true },
+  "braintrust": { "enabled": false },
+  "memory": {
+    "auto_learning": { "enabled": true },
+    "shared_model_cache": { "enabled": true }
+  },
+  "handoff": { "manual_compact": { "enabled": true } },
+  "tldr": { "model": "bge-large-en-v1.5" }
 }
 ```
 
 `subagents.enabled` 为 `true` 时，安装器才会转换并注册 Continuous 的 agent roles，同时打开 Codex 的 multi-agent 设置；为 `false` 时不会安装或注册这些 roles。`dashboard.enabled` 只控制是否复制本地 dashboard 脚本，不会自动启动网页服务。
+`memory.auto_learning.enabled` 控制测试结果、用户确认和工具动作是否写入本地 memory；`braintrust.enabled` 默认关闭，关闭时不会注册 Braintrust hooks。`handoff.manual_compact.enabled` 控制手动 `/compact` 是否生成 YAML handoff。`memory.shared_model_cache.enabled` 会让 memory 和 TLDR 共用 `~/.cache/huggingface`，默认使用同一个 BGE 模型。
 
 配置文件旁边运行安装器即可生效：
 
@@ -101,7 +109,7 @@ cd codex-continuous-patcher
 ```bash
 tldr semantic index /path/to/repository \
   --lang all \
-  --model all-MiniLM-L6-v2
+  --model bge-large-en-v1.5
 ```
 
 查询：
@@ -135,10 +143,16 @@ PYTHONPATH=. uv run python scripts/core/recall_learnings.py \
   --k 3
 ```
 
-Codex 自动 compaction 前，bridge 会写入：
+Codex 自动或手动 compaction 前，bridge 会写入：
 
 ```text
 thoughts/shared/handoffs/codex/auto-handoff-*.yaml
+```
+
+默认的 memory embedding 和 TLDR semantic index 都使用 `bge-large-en-v1.5`，模型文件共用：
+
+```text
+~/.cache/huggingface
 ```
 
 后续 context window 会在同一个 Codex thread 中读取它，不会自动创建第二个聊天。

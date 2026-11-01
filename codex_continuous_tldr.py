@@ -60,7 +60,7 @@ def _model(args: list[str]) -> str:
             index = args.index(flag)
             if index + 1 < len(args):
                 return args[index + 1]
-    return os.environ.get("CODEX_CONTINUOUS_TLDR_MODEL", "all-MiniLM-L6-v2")
+    return os.environ.get("CODEX_CONTINUOUS_TLDR_MODEL", "bge-large-en-v1.5")
 
 
 def _requested_model(args: list[str]) -> str | None:

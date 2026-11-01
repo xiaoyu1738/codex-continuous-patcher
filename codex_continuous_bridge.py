@@ -169,6 +169,22 @@ def adapt_input(raw: Any, event: str) -> dict[str, Any]:
                 if response_key in data:
                     data["tool_response"] = data[response_key]
                     break
+        response = data.get("tool_response")
+        if isinstance(response, str):
+            response = {"output": response}
+        elif not isinstance(response, dict):
+            response = {}
+        if "output" not in response:
+            for response_key in ("stdout", "text", "content"):
+                if isinstance(response.get(response_key), str):
+                    response["output"] = response[response_key]
+                    break
+        if "exitCode" not in response:
+            for response_key in ("exit_code", "returncode", "return_code", "status"):
+                if isinstance(response.get(response_key), int):
+                    response["exitCode"] = response[response_key]
+                    break
+        data["tool_response"] = response
         data.setdefault("tool_use_id", data.get("call_id", ""))
 
     if event == "UserPromptSubmit" and not isinstance(data.get("prompt"), str):
@@ -268,17 +284,59 @@ def _yaml_quote(value: str) -> str:
     return json.dumps(value.replace("\n", " ")[:500], ensure_ascii=False)
 
 
-def _codex_compact_handoff(data: dict[str, Any]) -> Path | None:
-    """Persist a Codex-native handoff before automatic context compaction.
+def _transcript_text(value: Any) -> str:
+    """Extract readable text from the transcript shapes used by Codex."""
+
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts: list[str] = []
+        for item in value:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                text = item.get("text") or item.get("content") or item.get("value")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "\n".join(parts)
+    if isinstance(value, dict):
+        text = value.get("text") or value.get("content") or value.get("value")
+        return text if isinstance(text, str) else ""
+    return ""
+
+
+def _transcript_arguments(entry: dict[str, Any]) -> dict[str, Any]:
+    """Normalize function-call arguments without executing transcript data."""
+
+    candidates = (entry.get("tool_input"), entry.get("arguments"), entry.get("input"))
+    for candidate in candidates:
+        if isinstance(candidate, dict):
+            return candidate
+        if isinstance(candidate, str):
+            try:
+                parsed = json.loads(candidate)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(parsed, dict):
+                return parsed
+    return {}
+
+
+def _codex_compact_handoff(
+    data: dict[str, Any], *, allow_manual: bool = True
+) -> Path | None:
+    """Persist a Codex-native handoff before context compaction.
 
     Claude's original hook expects a continuity ledger and a Claude transcript
     shape. Codex supplies a rollout transcript and may have no ledger at all,
-    so the adapter always writes a minimal, readable YAML handoff. The next
+    so the adapter writes a minimal, readable YAML handoff. Both automatic and
+    user-triggered compaction can create one when enabled. The next
     ``SessionStart(source=compact)`` hook can discover this file and inject it
     into the compacted context.
     """
 
-    if str(data.get("trigger") or "auto").lower() != "auto":
+    trigger = str(data.get("trigger") or "auto").lower()
+    if trigger not in {"auto", "manual"} or (trigger == "manual" and not allow_manual):
         return None
     project_dir = Path(str(data.get("cwd") or os.getcwd())).expanduser()
     if not project_dir.is_dir():
@@ -303,35 +361,39 @@ def _codex_compact_handoff(data: dict[str, Any]) -> Path | None:
                     entry = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if entry.get("role") == "assistant" and isinstance(entry.get("content"), str):
-                    last_assistant = entry["content"]
+                if entry.get("role") == "assistant":
+                    text = _transcript_text(entry.get("content") or entry.get("message"))
+                    if text:
+                        last_assistant = text
                 tool_name = entry.get("tool_name") or entry.get("name")
+                if not tool_name and isinstance(entry.get("tool"), dict):
+                    tool_name = entry["tool"].get("name")
                 if not tool_name and entry.get("type") == "function_call":
                     tool_name = entry.get("name")
                 if isinstance(tool_name, str) and tool_name:
                     tool_calls.append(tool_name)
-                tool_input = entry.get("tool_input")
-                if not isinstance(tool_input, dict):
-                    tool_input = entry.get("arguments") if isinstance(entry.get("arguments"), dict) else {}
-                if isinstance(tool_input, dict):
-                    candidate = tool_input.get("file_path") or tool_input.get("path")
-                    if isinstance(candidate, str) and candidate:
-                        files.append(candidate)
+                tool_input = _transcript_arguments(entry)
+                candidate = tool_input.get("file_path") or tool_input.get("path")
+                if isinstance(candidate, str) and candidate:
+                    files.append(candidate)
+                command = tool_input.get("command") or tool_input.get("patch")
+                if isinstance(command, str):
+                    files.extend(_patch_paths(command))
         except OSError:
             pass
 
     now = datetime.now(timezone.utc)  # noqa: UP017
     stamp = now.strftime("%Y-%m-%dT%H-%M-%S")
     session = str(data.get("session_id") or "unknown")
-    path = handoff_dir / f"auto-handoff-{stamp}-{session[:8]}.yaml"
+    path = handoff_dir / f"auto-handoff-{stamp}-{session[:8]}-{trigger}.yaml"
     unique_tools = list(dict.fromkeys(tool_calls[-10:]))
     unique_files = list(dict.fromkeys(files[-20:]))
-    goal = "Continue the current Codex task after automatic context compaction"
+    goal = f"Continue the current Codex task after {trigger} context compaction"
     current = last_assistant.strip() or "Resume from the most recent tool activity"
     lines = [
         "---",
         "type: auto-handoff",
-        "trigger: codex-pre-compact-auto",
+        f"trigger: codex-pre-compact-{trigger}",
         f"date: {_yaml_quote(now.isoformat())}",
         f"session: {_yaml_quote(session)}",
         "---",
@@ -367,6 +429,8 @@ def load_hook(manifest_path: Path, hook_id: str) -> tuple[dict[str, Any], Path]:
     hook = manifest.get("hooks", {}).get(hook_id)
     if not isinstance(hook, dict):
         raise KeyError(f"unknown hook id: {hook_id}")
+    hook = copy.deepcopy(hook)
+    hook["_features"] = manifest.get("features", {})
     deployment_root = Path(manifest.get("deployment_root") or manifest_path.parent).expanduser()
     return hook, deployment_root
 
@@ -519,6 +583,11 @@ def _safe_session_name(session_id: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", session_id)[:96] or "unknown"
 
 
+def _compact_message(data: dict[str, Any], handoff: Path) -> str:
+    trigger = str(data.get("trigger") or "auto").lower()
+    return f"[PreCompact:{trigger}] Created YAML handoff: {handoff}"
+
+
 def run_hook(raw_input: Any, hook: dict[str, Any], deployment_root: Path) -> dict[str, Any]:
     event = str(hook.get("event") or "")
     data = adapt_input(raw_input, event)
@@ -531,7 +600,13 @@ def run_hook(raw_input: Any, hook: dict[str, Any], deployment_root: Path) -> dic
     if not isinstance(command, str) or not command.strip():
         return {}
     command = rewrite_command(command, deployment_root)
-    compact_handoff = _codex_compact_handoff(data) if event == "PreCompact" else None
+    features = hook.get("_features") if isinstance(hook.get("_features"), dict) else {}
+    allow_manual_compact = bool(features.get("manual_compact", True))
+    compact_handoff = (
+        _codex_compact_handoff(data, allow_manual=allow_manual_compact)
+        if event == "PreCompact"
+        else None
+    )
     session_id = str(data.get("session_id") or "unknown")
     project_dir = Path(str(data.get("cwd") or os.getcwd())).expanduser()
     if not project_dir.is_dir():
@@ -552,6 +627,17 @@ def run_hook(raw_input: Any, hook: dict[str, Any], deployment_root: Path) -> dic
     env["CODEX_CONTINUOUS_ORIGINAL_HOME"] = env.get("HOME", "")
     env["HOME"] = str(deployment_root)
     env["USERPROFILE"] = str(deployment_root)
+    shared_cache = runtime_env.get("CODEX_CONTINUOUS_MODEL_CACHE")
+    shared_cache_enabled = runtime_env.get("CODEX_CONTINUOUS_SHARED_MODEL_CACHE", "1").lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    if shared_cache_enabled and not shared_cache:
+        original_home = env.get("CODEX_CONTINUOUS_ORIGINAL_HOME") or str(Path.home())
+        shared_cache = str(Path(original_home).expanduser() / ".cache" / "huggingface")
+    if shared_cache_enabled and shared_cache:
+        env["HF_HOME"] = shared_cache
     bundled_bin = deployment_root / "bin"
     if bundled_bin.is_dir():
         env["PATH"] = str(bundled_bin) + os.pathsep + env.get("PATH", "")
@@ -602,7 +688,7 @@ def run_hook(raw_input: Any, hook: dict[str, Any], deployment_root: Path) -> dic
             raise
         result = {}
         if compact_handoff:
-            result["systemMessage"] = f"[PreCompact:auto] Created YAML handoff: {compact_handoff}"
+            result["systemMessage"] = _compact_message(data, compact_handoff)
         return result
     except OSError as error:
         _log(f"{event}/{hook.get('id', 'hook')} failed to start: {error}")
@@ -610,7 +696,7 @@ def run_hook(raw_input: Any, hook: dict[str, Any], deployment_root: Path) -> dic
             raise
         result = {}
         if compact_handoff:
-            result["systemMessage"] = f"[PreCompact:auto] Created YAML handoff: {compact_handoff}"
+            result["systemMessage"] = _compact_message(data, compact_handoff)
         return result
 
     if completed.returncode != 0 and not completed.stdout.strip():
@@ -623,12 +709,12 @@ def run_hook(raw_input: Any, hook: dict[str, Any], deployment_root: Path) -> dic
             raise RuntimeError(f"hook exited with {completed.returncode}")
         result = {}
         if compact_handoff:
-            result["systemMessage"] = f"[PreCompact:auto] Created YAML handoff: {compact_handoff}"
+            result["systemMessage"] = _compact_message(data, compact_handoff)
         return result
 
     output = normalize_output(completed.stdout, event)
     if compact_handoff:
-        message = f"[PreCompact:auto] Created YAML handoff: {compact_handoff}"
+        message = _compact_message(data, compact_handoff)
         output["systemMessage"] = "\n".join(
             value for value in (output.get("systemMessage"), message) if value
         )
@@ -697,6 +783,7 @@ def run_event(raw_input: Any, event: str, manifest_path: Path, deployment_root: 
             continue
         current = dict(hook)
         current.setdefault("id", hook_id)
+        current["_features"] = manifest.get("features", {})
         output = run_hook(raw_input, current, deployment_root)
         if output:
             outputs.append(output)

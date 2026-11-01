@@ -84,18 +84,62 @@ def _positive_int(name: str, default: int) -> int:
     return value if value > 0 else default
 
 
-def semantic_environment(base: dict[str, str] | None = None) -> dict[str, str]:
-    """Build a low-parallelism environment with a stable user cache."""
+def _deployment_env(environment: dict[str, str]) -> dict[str, str]:
+    """Read deployment defaults for standalone `tldr` invocations."""
 
-    environment = dict(base or os.environ)
+    configured = environment.get("CODEX_CONTINUOUS_DEPLOYMENT") or environment.get(
+        "CODEX_CONTINUOUS_ROOT"
+    )
+    deployment = Path(configured).expanduser() if configured else Path(__file__).resolve().parent
+    path = deployment / ".env"
+    if not path.is_file():
+        return environment
+    for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        environment.setdefault(key.strip(), value.strip().strip("\"'"))
+    return environment
+
+
+def semantic_environment(base: dict[str, str] | None = None) -> dict[str, str]:
+    """Build a low-parallelism environment with the shared model cache."""
+
+    environment = _deployment_env(dict(base or os.environ))
     original_home = environment.get("CODEX_CONTINUOUS_ORIGINAL_HOME") or environment.get("HOME")
     if original_home:
         home = Path(original_home).expanduser()
         environment["HOME"] = str(home)
-        cache_home = Path(environment.get("XDG_CACHE_HOME", home / ".cache")).expanduser()
-        tldr_cache = cache_home / "tldr"
-        environment.setdefault("FASTEMBED_CACHE_DIR", str(tldr_cache / "fastembed"))
-        environment.setdefault("HF_HOME", str(tldr_cache / "fastembed"))
+        shared = environment.get("CODEX_CONTINUOUS_SHARED_MODEL_CACHE", "true").lower() in {
+            "1",
+            "true",
+            "yes",
+        }
+        if shared:
+            cache_root = Path(
+                environment.get("CODEX_CONTINUOUS_MODEL_CACHE")
+                or environment.get("HF_HOME")
+                or Path(environment.get("XDG_CACHE_HOME", home / ".cache")) / "huggingface"
+            ).expanduser()
+            if environment.get("CODEX_CONTINUOUS_MODEL_CACHE"):
+                environment["HF_HOME"] = str(cache_root)
+            else:
+                environment.setdefault("HF_HOME", str(cache_root))
+            # fastembed is not required by llm-tldr 1.5.2, but if an optional
+            # path uses it later, keep it under the same shared root.
+            environment.setdefault("FASTEMBED_CACHE_DIR", str(cache_root / "fastembed"))
+        else:
+            cache_home = Path(environment.get("XDG_CACHE_HOME", home / ".cache")).expanduser()
+            tldr_cache = cache_home / "tldr"
+            environment.setdefault("FASTEMBED_CACHE_DIR", str(tldr_cache / "fastembed"))
+            environment.setdefault("HF_HOME", str(tldr_cache / "fastembed"))
+
+    configured_model = environment.get("CODEX_CONTINUOUS_TLDR_MODEL") or environment.get(
+        "EMBEDDING_MODEL"
+    )
+    if configured_model:
+        environment.setdefault("CODEX_CONTINUOUS_TLDR_MODEL", configured_model.rsplit("/", 1)[-1])
 
     # PyTorch/BLAS can multiply the model's working set by the CPU count.
     environment.setdefault("OMP_NUM_THREADS", "2")

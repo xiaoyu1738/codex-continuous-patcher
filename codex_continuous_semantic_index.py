@@ -28,7 +28,7 @@ from codex_continuous_semantic_runtime import (
 )
 
 
-DEFAULT_MODEL = "all-MiniLM-L6-v2"
+DEFAULT_MODEL = "bge-large-en-v1.5"
 
 
 def _semantic_dir(project: Path | str) -> Path:

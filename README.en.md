@@ -71,11 +71,19 @@ The repository's [`codex-continuous.config.json`](codex-continuous.config.json) 
 ```json
 {
   "subagents": { "enabled": false },
-  "dashboard": { "enabled": true }
+  "dashboard": { "enabled": true },
+  "braintrust": { "enabled": false },
+  "memory": {
+    "auto_learning": { "enabled": true },
+    "shared_model_cache": { "enabled": true }
+  },
+  "handoff": { "manual_compact": { "enabled": true } },
+  "tldr": { "model": "bge-large-en-v1.5" }
 }
 ```
 
 When `subagents.enabled` is `true`, the installer converts and registers the Continuous agent roles and enables Codex's multi-agent settings. When it is `false`, those roles are neither installed nor registered. `dashboard.enabled` only controls whether the local dashboard script is copied; it does not start a web server.
+`memory.auto_learning.enabled` controls local learning extraction from test results, user confirmations, and tool actions. `braintrust.enabled` is disabled by default; when disabled, Braintrust hooks are not registered. `handoff.manual_compact.enabled` controls YAML handoff creation for user-triggered `/compact`. `memory.shared_model_cache.enabled` makes memory and TLDR share `~/.cache/huggingface` and the same BGE model by default.
 
 Run the installer next to the configuration file:
 
@@ -101,7 +109,7 @@ Build an index for a repository:
 ```bash
 tldr semantic index /path/to/repository \
   --lang all \
-  --model all-MiniLM-L6-v2
+  --model bge-large-en-v1.5
 ```
 
 Query it:
@@ -135,10 +143,16 @@ PYTHONPATH=. uv run python scripts/core/recall_learnings.py \
   --k 3
 ```
 
-Before automatic Codex compaction, the bridge writes:
+Before automatic or manual Codex compaction, the bridge writes:
 
 ```text
 thoughts/shared/handoffs/codex/auto-handoff-*.yaml
+```
+
+Memory embeddings and TLDR semantic indexes use `bge-large-en-v1.5` by default and share one model cache:
+
+```text
+~/.cache/huggingface
 ```
 
 The next context window loads that state in the same Codex thread; it does not create a second chat.

@@ -4,5 +4,24 @@
   },
   "dashboard": {
     "enabled": true
+  },
+  "braintrust": {
+    "enabled": false
+  },
+  "memory": {
+    "auto_learning": {
+      "enabled": true
+    },
+    "shared_model_cache": {
+      "enabled": true
+    }
+  },
+  "handoff": {
+    "manual_compact": {
+      "enabled": true
+    }
+  },
+  "tldr": {
+    "model": "bge-large-en-v1.5"
   }
 }
