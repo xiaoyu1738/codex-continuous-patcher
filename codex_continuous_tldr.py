@@ -8,14 +8,18 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any
 
 _DEPLOYMENT_ROOT = Path(__file__).resolve().parent.parent
 if str(_DEPLOYMENT_ROOT) not in sys.path:
     sys.path.insert(0, str(_DEPLOYMENT_ROOT))
 
-from codex_continuous_semantic_index import build_index, search as semantic_search
-from codex_continuous_semantic_runtime import semantic_environment, semantic_project_guard
+from codex_continuous_repo_scale import measure_repository
+from codex_continuous_semantic_index import build_index
+from codex_continuous_semantic_index import search as semantic_search
+from codex_continuous_semantic_runtime import (
+    semantic_environment,
+    semantic_project_guard,
+)
 
 
 def _python() -> str:
@@ -86,7 +90,10 @@ def _upstream(args: list[str], project: Path | None = None) -> int:
 
 def _semantic(args: list[str]) -> int:
     if not args or args[0] not in {"search", "index"}:
-        print("Usage: tldr semantic index <path> | tldr semantic search <query> [--path <path>]", file=sys.stderr)
+        print(
+            "Usage: tldr semantic index <path> | tldr semantic search <query> [--path <path>]",
+            file=sys.stderr,
+        )
         return 2
     action, rest = args[0], args[1:]
     project, rest = _project(rest)
@@ -107,7 +114,11 @@ def _semantic(args: list[str]) -> int:
         print("Usage: tldr semantic search <query> [--path <path>]", file=sys.stderr)
         return 2
     query = rest[0]
-    if len(rest) > 1 and not rest[1].startswith("-") and Path(rest[1]).expanduser().is_dir():
+    if (
+        len(rest) > 1
+        and not rest[1].startswith("-")
+        and Path(rest[1]).expanduser().is_dir()
+    ):
         project = Path(rest[1]).expanduser().resolve()
     if "--path" in rest:
         index = rest.index("--path")
@@ -123,7 +134,11 @@ def _semantic(args: list[str]) -> int:
                 pass
     guard = semantic_project_guard(project)
     if not guard.get("allowed"):
-        print(json.dumps({"status": "skipped", "error": guard.get("reason")}, ensure_ascii=False))
+        print(
+            json.dumps(
+                {"status": "skipped", "error": guard.get("reason")}, ensure_ascii=False
+            )
+        )
         return 2
     result = semantic_search(
         project,
@@ -134,20 +149,31 @@ def _semantic(args: list[str]) -> int:
         build_if_missing=False,
     )
     if result is None:
-        print("Semantic search unavailable; normal text search remains available.", file=sys.stderr)
+        print(
+            "Semantic search unavailable; normal text search remains available.",
+            file=sys.stderr,
+        )
         return 1
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 
 
 def _daemon(args: list[str]) -> int:
-    project, rest = _project(args[1:])
+    project, _ = _project(args[1:])
     helper = _DEPLOYMENT_ROOT / "codex_continuous_tldr_daemon.py"
     action = args[0] if args else "status"
     flags = {"start": "--start", "stop": "--stop", "status": "--status"}
     if action in flags:
         result = subprocess.run(
-            [_python(), str(helper), flags[action], "--project", str(project), "--deployment", str(_DEPLOYMENT_ROOT)],
+            [
+                _python(),
+                str(helper),
+                flags[action],
+                "--project",
+                str(project),
+                "--deployment",
+                str(_DEPLOYMENT_ROOT),
+            ],
             cwd=str(project),
             env=semantic_environment(),
             text=True,
@@ -155,6 +181,19 @@ def _daemon(args: list[str]) -> int:
         )
         return result.returncode
     return _upstream(["daemon", *args], project)
+
+
+def _scale(args: list[str]) -> int:
+    project, remaining = _project(args)
+    if remaining:
+        return 2
+    environment = semantic_environment()
+    print(
+        json.dumps(
+            measure_repository(project, environment=environment), ensure_ascii=False
+        )
+    )
+    return 0
 
 
 def main() -> int:
@@ -165,6 +204,8 @@ def main() -> int:
         return _semantic(args[1:])
     if args[0] == "daemon":
         return _daemon(args[1:])
+    if args[0] == "scale":
+        return _scale(args[1:])
     project, remaining = _project(args[1:])
     return _upstream([args[0], *remaining], project)
 

@@ -14,9 +14,16 @@ import os
 import shutil
 import subprocess
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
+
+from codex_continuous_repo_scale import (
+    DEFAULT_MIN_CODE_BYTES,
+    DEFAULT_MIN_CODE_FILES,
+    measure_repository,
+)
 
 try:
     import fcntl
@@ -90,7 +97,9 @@ def _deployment_env(environment: dict[str, str]) -> dict[str, str]:
     configured = environment.get("CODEX_CONTINUOUS_DEPLOYMENT") or environment.get(
         "CODEX_CONTINUOUS_ROOT"
     )
-    deployment = Path(configured).expanduser() if configured else Path(__file__).resolve().parent
+    deployment = (
+        Path(configured).expanduser() if configured else Path(__file__).resolve().parent
+    )
     path = deployment / ".env"
     if not path.is_file():
         return environment
@@ -107,11 +116,15 @@ def semantic_environment(base: dict[str, str] | None = None) -> dict[str, str]:
     """Build a low-parallelism environment with the shared model cache."""
 
     environment = _deployment_env(dict(base or os.environ))
-    original_home = environment.get("CODEX_CONTINUOUS_ORIGINAL_HOME") or environment.get("HOME")
+    original_home = environment.get(
+        "CODEX_CONTINUOUS_ORIGINAL_HOME"
+    ) or environment.get("HOME")
     if original_home:
         home = Path(original_home).expanduser()
         environment["HOME"] = str(home)
-        shared = environment.get("CODEX_CONTINUOUS_SHARED_MODEL_CACHE", "true").lower() in {
+        shared = environment.get(
+            "CODEX_CONTINUOUS_SHARED_MODEL_CACHE", "true"
+        ).lower() in {
             "1",
             "true",
             "yes",
@@ -120,7 +133,8 @@ def semantic_environment(base: dict[str, str] | None = None) -> dict[str, str]:
             cache_root = Path(
                 environment.get("CODEX_CONTINUOUS_MODEL_CACHE")
                 or environment.get("HF_HOME")
-                or Path(environment.get("XDG_CACHE_HOME", home / ".cache")) / "huggingface"
+                or Path(environment.get("XDG_CACHE_HOME", home / ".cache"))
+                / "huggingface"
             ).expanduser()
             if environment.get("CODEX_CONTINUOUS_MODEL_CACHE"):
                 environment["HF_HOME"] = str(cache_root)
@@ -130,16 +144,20 @@ def semantic_environment(base: dict[str, str] | None = None) -> dict[str, str]:
             # path uses it later, keep it under the same shared root.
             environment.setdefault("FASTEMBED_CACHE_DIR", str(cache_root / "fastembed"))
         else:
-            cache_home = Path(environment.get("XDG_CACHE_HOME", home / ".cache")).expanduser()
+            cache_home = Path(
+                environment.get("XDG_CACHE_HOME", home / ".cache")
+            ).expanduser()
             tldr_cache = cache_home / "tldr"
             environment.setdefault("FASTEMBED_CACHE_DIR", str(tldr_cache / "fastembed"))
             environment.setdefault("HF_HOME", str(tldr_cache / "fastembed"))
 
-    configured_model = environment.get("CODEX_CONTINUOUS_TLDR_MODEL") or environment.get(
-        "EMBEDDING_MODEL"
-    )
+    configured_model = environment.get(
+        "CODEX_CONTINUOUS_TLDR_MODEL"
+    ) or environment.get("EMBEDDING_MODEL")
     if configured_model:
-        environment.setdefault("CODEX_CONTINUOUS_TLDR_MODEL", configured_model.rsplit("/", 1)[-1])
+        environment.setdefault(
+            "CODEX_CONTINUOUS_TLDR_MODEL", configured_model.rsplit("/", 1)[-1]
+        )
 
     # PyTorch/BLAS can multiply the model's working set by the CPU count.
     environment.setdefault("OMP_NUM_THREADS", "2")
@@ -247,7 +265,7 @@ def _tldr_ignore_patterns(project: Path) -> list[str]:
         return []
     for line in lines:
         pattern = line.strip()
-        if not pattern or pattern.startswith("#") or pattern.startswith("!"):
+        if not pattern or pattern.startswith(("#", "!")):
             continue
         patterns.append(pattern.rstrip("/"))
     return patterns
@@ -258,7 +276,9 @@ def _ignored(relative: Path, patterns: list[str]) -> bool:
     for pattern in patterns:
         if fnmatch.fnmatchcase(value, pattern) or relative.match(pattern):
             return True
-        if "/" not in pattern and any(fnmatch.fnmatchcase(part, pattern) for part in relative.parts):
+        if "/" not in pattern and any(
+            fnmatch.fnmatchcase(part, pattern) for part in relative.parts
+        ):
             return True
         if value == pattern or value.startswith(pattern + "/"):
             return True
@@ -276,7 +296,11 @@ def code_files(project: Path) -> Iterator[Path]:
     """
 
     patterns = _tldr_ignore_patterns(project)
-    tracked = _git_code_files(project) if os.environ.get("CODEX_CONTINUOUS_TLDR_TRACKED_ONLY") in {"1", "true", "yes"} else None
+    tracked = (
+        _git_code_files(project)
+        if os.environ.get("CODEX_CONTINUOUS_TLDR_TRACKED_ONLY") in {"1", "true", "yes"}
+        else None
+    )
     source_files = tracked if tracked is not None else _walk_code_files(project)
 
     def filtered() -> Iterator[Path]:
@@ -295,11 +319,59 @@ def code_files(project: Path) -> Iterator[Path]:
 
 
 def semantic_project_guard(project: Path) -> dict[str, Any]:
-    """Estimate semantic indexing size without reading source contents."""
+    """Apply the large-repository gate before the semantic safety budget."""
+
+    environment = semantic_environment()
+    min_files = _positive_int("CODEX_CONTINUOUS_TLDR_MIN_FILES", DEFAULT_MIN_CODE_FILES)
+    min_bytes = (
+        _positive_int(
+            "CODEX_CONTINUOUS_TLDR_MIN_CODE_KB", DEFAULT_MIN_CODE_BYTES // 1024
+        )
+        * 1024
+    )
+    try:
+        min_files = int(environment.get("CODEX_CONTINUOUS_TLDR_MIN_FILES") or min_files)
+    except (TypeError, ValueError):
+        pass
+    try:
+        min_bytes = (
+            int(
+                environment.get("CODEX_CONTINUOUS_TLDR_MIN_CODE_KB")
+                or (min_bytes // 1024)
+            )
+            * 1024
+        )
+    except (TypeError, ValueError):
+        pass
+    scale = measure_repository(
+        project,
+        min_code_files=min_files,
+        min_code_bytes=min_bytes,
+        tracked_only=environment.get("CODEX_CONTINUOUS_TLDR_TRACKED_ONLY")
+        in {"1", "true", "yes"},
+        environment=environment,
+    )
+    if not scale.get("eligible"):
+        return {
+            **scale,
+            "allowed": False,
+            "reason": scale.get("reason", "repository is below TLDR scale threshold"),
+        }
 
     max_files = _positive_int("CODEX_CONTINUOUS_TLDR_MAX_FILES", DEFAULT_MAX_CODE_FILES)
-    max_bytes = _positive_int("CODEX_CONTINUOUS_TLDR_MAX_CODE_MB", DEFAULT_MAX_CODE_BYTES // (1024 * 1024)) * 1024 * 1024
-    max_file_bytes = _positive_int("CODEX_CONTINUOUS_TLDR_MAX_FILE_KB", DEFAULT_MAX_FILE_BYTES // 1024) * 1024
+    max_bytes = (
+        _positive_int(
+            "CODEX_CONTINUOUS_TLDR_MAX_CODE_MB", DEFAULT_MAX_CODE_BYTES // (1024 * 1024)
+        )
+        * 1024
+        * 1024
+    )
+    max_file_bytes = (
+        _positive_int(
+            "CODEX_CONTINUOUS_TLDR_MAX_FILE_KB", DEFAULT_MAX_FILE_BYTES // 1024
+        )
+        * 1024
+    )
     count = 0
     total_bytes = 0
     try:
@@ -323,8 +395,12 @@ def semantic_project_guard(project: Path) -> dict[str, Any]:
                     "max_file_bytes": max_file_bytes,
                 }
     except OSError as error:
-        return {"allowed": False, "reason": f"cannot inspect project: {type(error).__name__}"}
+        return {
+            "allowed": False,
+            "reason": f"cannot inspect project: {type(error).__name__}",
+        }
     return {
+        **scale,
         "allowed": True,
         "files": count,
         "bytes": total_bytes,

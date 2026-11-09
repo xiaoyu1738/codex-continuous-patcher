@@ -6,8 +6,8 @@ import tempfile
 import tomllib
 import unittest
 from datetime import datetime
-from unittest.mock import patch
 from pathlib import Path
+from unittest.mock import patch
 
 import codex_continuous_native as native
 import codex_continuous_status as status
@@ -25,21 +25,34 @@ class NativeResourceTests(unittest.TestCase):
                 "---\nname: sample\ndescription: |\n  First line\n  Second line\n---\n\n# Instructions\nRead references/guide.md.\n",
                 encoding="utf-8",
             )
-            (skill / "references" / "guide.md").write_text("reference content\n", encoding="utf-8")
+            (skill / "references" / "guide.md").write_text(
+                "reference content\n", encoding="utf-8"
+            )
             codex_home = root / "codex"
-            result = native.convert_skills(source, root / "native", codex_home=codex_home)
+            result = native.convert_skills(
+                source, root / "native", codex_home=codex_home
+            )
 
             self.assertEqual(len(result["converted"]), 1)
             installed = Path(result["converted"][0]["path"]).parent
             converted_text = (installed / "SKILL.md").read_text(encoding="utf-8")
             self.assertIn("name: cc-codex-continuous-v3-sample", converted_text)
             self.assertIn('description: "First line\\nSecond line"', converted_text)
-            self.assertEqual((installed / "references" / "guide.md").read_text(), "reference content\n")
+            self.assertEqual(
+                (installed / "references" / "guide.md").read_text(),
+                "reference content\n",
+            )
 
             (installed / "local-note.md").write_text("keep this edit", encoding="utf-8")
-            again = native.convert_skills(source, root / "native", codex_home=codex_home)
-            self.assertEqual(again["skipped"][0]["reason"], "managed skill has local edits")
-            self.assertEqual((installed / "local-note.md").read_text(), "keep this edit")
+            again = native.convert_skills(
+                source, root / "native", codex_home=codex_home
+            )
+            self.assertEqual(
+                again["skipped"][0]["reason"], "managed skill has local edits"
+            )
+            self.assertEqual(
+                (installed / "local-note.md").read_text(), "keep this edit"
+            )
 
     def test_agent_markdown_and_json_prompts_become_codex_roles(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -50,17 +63,30 @@ class NativeResourceTests(unittest.TestCase):
                 encoding="utf-8",
             )
             (source_agents / "reviewer.json").write_text(
-                json.dumps({"name": "reviewer", "description": "Review role", "prompt": "Find defects."}),
+                json.dumps(
+                    {
+                        "name": "reviewer",
+                        "description": "Review role",
+                        "prompt": "Find defects.",
+                    }
+                ),
                 encoding="utf-8",
             )
-            result = native.convert_agents(source_agents.parent, Path(temporary) / "native")
+            result = native.convert_agents(
+                source_agents.parent, Path(temporary) / "native"
+            )
             self.assertEqual(len(result["agents"]), 2)
-            role_configs = [tomllib.loads(Path(agent["path"]).read_text()) for agent in result["agents"]]
+            role_configs = [
+                tomllib.loads(Path(agent["path"]).read_text())
+                for agent in result["agents"]
+            ]
             prompts = {config["developer_instructions"] for config in role_configs}
             self.assertIn("Find evidence.\n", prompts)
             self.assertIn("Find defects.", prompts)
 
-    def test_mcp_conversion_uses_codex_schema_and_preserves_disabled_entries(self) -> None:
+    def test_mcp_conversion_uses_codex_schema_and_preserves_disabled_entries(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source = root / ".claude"
@@ -74,8 +100,15 @@ class NativeResourceTests(unittest.TestCase):
                                 "command": "python",
                                 "args": ["$HOME/.claude/servers/qlty/server.py"],
                             },
-                            "remote": {"type": "http", "url": "https://example.test/mcp"},
-                            "disabled": {"command": "npx", "args": ["disabled"], "disabled": True},
+                            "remote": {
+                                "type": "http",
+                                "url": "https://example.test/mcp",
+                            },
+                            "disabled": {
+                                "command": "npx",
+                                "args": ["disabled"],
+                                "disabled": True,
+                            },
                         }
                     }
                 ),
@@ -83,7 +116,9 @@ class NativeResourceTests(unittest.TestCase):
             )
             target = root / "deployment" / "codex-native"
             deployment_claude = root / "deployment" / ".claude"
-            result = native.convert_mcp_config(source, target, codex_claude=deployment_claude)
+            result = native.convert_mcp_config(
+                source, target, codex_claude=deployment_claude
+            )
             catalog = tomllib.loads((target / "mcp-servers.toml").read_text())
             servers = catalog["mcp_servers"]
             self.assertEqual(len(result["servers"]), 4)
@@ -93,7 +128,9 @@ class NativeResourceTests(unittest.TestCase):
                 servers["codex-continuous-qlty"]["args"][-1],
                 str(deployment_claude / "servers" / "qlty" / "server.py"),
             )
-            self.assertEqual(servers["codex-continuous-remote"]["url"], "https://example.test/mcp")
+            self.assertEqual(
+                servers["codex-continuous-remote"]["url"], "https://example.test/mcp"
+            )
 
 
 class InstallerConfigTests(unittest.TestCase):
@@ -111,6 +148,10 @@ class InstallerConfigTests(unittest.TestCase):
                     "manual_compact_enabled": True,
                     "shared_model_cache_enabled": True,
                     "tldr_model": "bge-large-en-v1.5",
+                    "rlm_output_threshold_kb": 48,
+                    "tldr_min_files": 80,
+                    "tldr_min_code_kb": 512,
+                    "ast_grep_enabled": True,
                 },
             )
             with self.assertRaises(FileNotFoundError):
@@ -122,7 +163,12 @@ class InstallerConfigTests(unittest.TestCase):
                         "subagents": {"enabled": True},
                         "dashboard": {"enabled": False},
                         "memory": {"auto_learning": {"enabled": False}},
-                        "tldr": {"model": "BAAI/bge-large-en-v1.5"},
+                        "rlm": {"output_threshold_kb": 64},
+                        "mcp": {"ast_grep": {"enabled": False}},
+                        "tldr": {
+                            "model": "BAAI/bge-large-en-v1.5",
+                            "scale": {"min_files": 100, "min_code_kb": 256},
+                        },
                     }
                 ),
                 encoding="utf-8",
@@ -132,6 +178,10 @@ class InstallerConfigTests(unittest.TestCase):
             self.assertFalse(options["dashboard_enabled"])
             self.assertFalse(options["auto_learning_enabled"])
             self.assertEqual(options["tldr_model"], "bge-large-en-v1.5")
+            self.assertEqual(options["rlm_output_threshold_kb"], 64)
+            self.assertEqual(options["tldr_min_files"], 100)
+            self.assertEqual(options["tldr_min_code_kb"], 256)
+            self.assertFalse(options["ast_grep_enabled"])
             overridden = install.resolve_install_options(
                 config, subagents_override=False, dashboard_override=True
             )
@@ -141,7 +191,7 @@ class InstallerConfigTests(unittest.TestCase):
             (root / "invalid.json").write_text(
                 json.dumps({"subagents": {"enabled": "yes"}}), encoding="utf-8"
             )
-            with self.assertRaises(RuntimeError):
+            with self.assertRaises(TypeError):
                 install.load_install_config(root / "invalid.json")
 
     def test_optional_resources_follow_install_switches(self) -> None:
@@ -165,7 +215,9 @@ class InstallerConfigTests(unittest.TestCase):
             self.assertFalse(disabled["subagents_enabled"])
             self.assertFalse(disabled["dashboard_enabled"])
             self.assertEqual(disabled["agents"]["agents"], [])
-            self.assertFalse((disabled_deployment / "codex_continuous_dashboard.py").exists())
+            self.assertFalse(
+                (disabled_deployment / "codex_continuous_dashboard.py").exists()
+            )
             self.assertFalse((disabled_deployment / "codex-native" / "agents").exists())
 
             enabled_deployment = root / "enabled"
@@ -179,7 +231,9 @@ class InstallerConfigTests(unittest.TestCase):
             self.assertTrue(enabled["subagents_enabled"])
             self.assertTrue(enabled["dashboard_enabled"])
             self.assertEqual(len(enabled["agents"]["agents"]), 1)
-            self.assertTrue((enabled_deployment / "codex_continuous_dashboard.py").exists())
+            self.assertTrue(
+                (enabled_deployment / "codex_continuous_dashboard.py").exists()
+            )
             self.assertTrue((enabled_deployment / "codex-native" / "agents").is_dir())
 
     def test_git_mcp_drops_relative_repository_for_codex_daemon(self) -> None:
@@ -202,15 +256,17 @@ class InstallerConfigTests(unittest.TestCase):
             None,
         )
         self.assertIsNone(error)
-        self.assertEqual(values["args"], ["mcp-server-git", "--repository", "/tmp/repository"])
+        self.assertEqual(
+            values["args"], ["mcp-server-git", "--repository", "/tmp/repository"]
+        )
 
     def test_merge_is_idempotent_and_uninstall_restores_user_settings(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             config = root / "config.toml"
             config.write_text(
-                '[features]\nmulti_agent = true\nother_feature = true\n\n'
-                '[agents]\nenabled = true\nmax_depth = 3\n\n'
+                "[features]\nmulti_agent = true\nother_feature = true\n\n"
+                "[agents]\nenabled = true\nmax_depth = 3\n\n"
                 '[mcp_servers."codex-continuous-fetch"]\ncommand = "my-fetch"\n',
                 encoding="utf-8",
             )
@@ -224,7 +280,10 @@ class InstallerConfigTests(unittest.TestCase):
             )
             merged = install.merge_mcp_config(config, catalog)
             self.assertEqual(merged["installed"], ["codex-continuous-git"])
-            self.assertEqual(install.merge_mcp_config(config, catalog)["installed"], ["codex-continuous-git"])
+            self.assertEqual(
+                install.merge_mcp_config(config, catalog)["installed"],
+                ["codex-continuous-git"],
+            )
             agent_result = install.merge_agent_roles(
                 config,
                 {
@@ -247,12 +306,20 @@ class InstallerConfigTests(unittest.TestCase):
             self.assertIn("codex-continuous-fetch", parsed["mcp_servers"])
             self.assertIn("codex-continuous-git", parsed["mcp_servers"])
             self.assertIn("codex-continuous-reviewer", parsed["agents"])
-            self.assertEqual(parsed["mcp_servers"]["codex-continuous-fetch"]["command"], "my-fetch")
+            self.assertEqual(
+                parsed["mcp_servers"]["codex-continuous-fetch"]["command"], "my-fetch"
+            )
 
-            cleaned = install._strip_block(config.read_text(), install.MCP_BEGIN, install.MCP_END)
-            cleaned = install._strip_block(cleaned, install.AGENTS_BEGIN, install.AGENTS_END)
+            cleaned = install._strip_block(
+                config.read_text(), install.MCP_BEGIN, install.MCP_END
+            )
+            cleaned = install._strip_block(
+                cleaned, install.AGENTS_BEGIN, install.AGENTS_END
+            )
             install._atomic_config_write(config, cleaned)
-            install.restore_managed_setting(config, "features.multi_agent_v2", "enabled")
+            install.restore_managed_setting(
+                config, "features.multi_agent_v2", "enabled"
+            )
             install.restore_managed_setting(config, "features", "multi_agent_v2")
             install.restore_managed_setting(config, "features", "multi_agent")
             install.restore_managed_setting(config, "agents", "enabled")
@@ -290,7 +357,12 @@ class InstallerConfigTests(unittest.TestCase):
 
             with patch.dict(os.environ, {"CODEX_CONTINUOUS_ENABLE_BRAINTRUST": "1"}):
                 manifest, hooks = install.build_hooks(source, deployment)
-            self.assertEqual(len([key for key in manifest["hooks"] if key.startswith("braintrust_")]), 5)
+            self.assertEqual(
+                len(
+                    [key for key in manifest["hooks"] if key.startswith("braintrust_")]
+                ),
+                5,
+            )
             post_tool = hooks["hooks"]["PostToolUse"][0]["hooks"][0]
             self.assertIn("--event", post_tool["command"])
             self.assertIn("PostToolUse", post_tool["command"])
@@ -325,9 +397,13 @@ class InstallerConfigTests(unittest.TestCase):
             )
             manifest, generated = install.build_hooks(source, deployment)
             self.assertEqual(manifest["hooks"]["pretooluse_0_0"]["timeout"], 60)
-            self.assertEqual(generated["hooks"]["PreToolUse"][0]["hooks"][0]["timeout"], 60)
+            self.assertEqual(
+                generated["hooks"]["PreToolUse"][0]["hooks"][0]["timeout"], 60
+            )
 
-    def test_learning_hooks_are_registered_without_braintrust_or_subagents(self) -> None:
+    def test_learning_hooks_are_registered_without_braintrust_or_subagents(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source = root / "source"
@@ -368,7 +444,9 @@ class InstallerConfigTests(unittest.TestCase):
             self.assertIn("codex_auto_learning", manifest["hooks"])
             self.assertIn("codex_user_confirm_learning", manifest["hooks"])
             self.assertNotIn("braintrust", " ".join(manifest["hooks"]))
-            self.assertFalse(any("braintrust" in str(h) for h in manifest["hooks"].values()))
+            self.assertFalse(
+                any("braintrust" in str(h) for h in manifest["hooks"].values())
+            )
             self.assertEqual(manifest["features"]["manual_compact"], True)
 
     def test_session_end_bundle_uses_codex_three_second_limit(self) -> None:
@@ -383,11 +461,7 @@ class InstallerConfigTests(unittest.TestCase):
                     {
                         "hooks": {
                             "SessionEnd": [
-                                {
-                                    "hooks": [
-                                        {"type": "command", "command": "echo done"}
-                                    ]
-                                }
+                                {"hooks": [{"type": "command", "command": "echo done"}]}
                             ]
                         }
                     }
@@ -402,13 +476,19 @@ class InstallerConfigTests(unittest.TestCase):
     def test_continuity_hook_ignores_stale_automatic_handoffs(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             deployment = Path(temporary)
-            hook = deployment / ".claude" / "hooks" / "dist" / "session-start-continuity.mjs"
+            hook = (
+                deployment
+                / ".claude"
+                / "hooks"
+                / "dist"
+                / "session-start-continuity.mjs"
+            )
             hook.parent.mkdir(parents=True)
             hook.write_text(
                 "async function main() {\n"
                 "  const input = JSON.parse(await readStdin());\n"
                 "  const sessionType = input.source || input.type;\n"
-                "  const handoffsDir = path.join(projectDir, \"thoughts\", \"shared\", \"handoffs\");\n"
+                '  const handoffsDir = path.join(projectDir, "thoughts", "shared", "handoffs");\n'
                 "  let mostRecentLedger = null;\n"
                 "  const handoffFiles = fs.readdirSync(handoffDir).filter((f) => isHandoffFile(f)).sort((a, b) => {\n"
                 "    return 0;\n"
@@ -455,7 +535,9 @@ class InstallerConfigTests(unittest.TestCase):
                 for hook in manifest["hooks"].values()
                 if str(hook.get("id", "")).startswith("codex_change_tracker_")
             ]
-            self.assertEqual({hook["event"] for hook in tracked}, {"PreToolUse", "PostToolUse"})
+            self.assertEqual(
+                {hook["event"] for hook in tracked}, {"PreToolUse", "PostToolUse"}
+            )
 
     def test_status_reports_multi_agent_v2_precedence(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -467,10 +549,15 @@ class InstallerConfigTests(unittest.TestCase):
                 encoding="utf-8",
             )
             self.assertTrue(status._subagents_enabled(config))
-            config.write_text(config.read_text().replace("enabled = true", "enabled = false"), encoding="utf-8")
+            config.write_text(
+                config.read_text().replace("enabled = true", "enabled = false"),
+                encoding="utf-8",
+            )
             self.assertFalse(status._subagents_enabled(config))
 
-    def test_global_rule_merge_preserves_user_instructions_and_skips_claude_only_rules(self) -> None:
+    def test_global_rule_merge_preserves_user_instructions_and_skips_claude_only_rules(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             rules = root / "source" / ".claude" / "rules"
@@ -499,13 +586,18 @@ class InstallerConfigTests(unittest.TestCase):
             install.merge_global_rules(root / "source", codex_home)
             adapted = agents_file.read_text(encoding="utf-8")
             self.assertIn("scripts/core/recall_learnings.py", adapted)
-            self.assertIn("${CODEX_CONTINUOUS_ROOT:-" + str(codex_home / "continuous-claude-v3"), adapted)
+            self.assertIn(
+                "${CODEX_CONTINUOUS_ROOT:-" + str(codex_home / "continuous-claude-v3"),
+                adapted,
+            )
             self.assertIn("/cc-codex-continuous-v3-recall", adapted)
             self.assertNotIn("cc-codex-continuous-v3-recall_learnings.py", adapted)
             install.merge_global_rules(root / "source", codex_home)
             self.assertEqual(agents_file.read_text().count(install.RULES_BEGIN), 1)
             self.assertTrue(install.remove_global_rules(codex_home))
-            self.assertEqual(agents_file.read_text().strip(), "User instructions stay here.")
+            self.assertEqual(
+                agents_file.read_text().strip(), "User instructions stay here."
+            )
 
     def test_uninstall_removes_only_an_agents_file_created_by_installer(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -519,7 +611,6 @@ class InstallerConfigTests(unittest.TestCase):
             self.assertTrue((codex_home / "AGENTS.md").is_file())
             install.remove_global_rules(codex_home)
             self.assertFalse((codex_home / "AGENTS.md").exists())
-
 
 
 if __name__ == "__main__":

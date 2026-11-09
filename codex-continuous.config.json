@@ -22,6 +22,18 @@
     }
   },
   "tldr": {
-    "model": "bge-large-en-v1.5"
+    "model": "bge-large-en-v1.5",
+    "scale": {
+      "min_files": 80,
+      "min_code_kb": 512
+    }
+  },
+  "rlm": {
+    "output_threshold_kb": 48
+  },
+  "mcp": {
+    "ast_grep": {
+      "enabled": true
+    }
   }
 }

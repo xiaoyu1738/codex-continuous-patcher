@@ -82,12 +82,17 @@ DEFAULT_BRAINTRUST_ENABLED = False
 DEFAULT_MANUAL_COMPACT_ENABLED = True
 DEFAULT_SHARED_MODEL_CACHE_ENABLED = True
 DEFAULT_TLDR_MODEL = "bge-large-en-v1.5"
+DEFAULT_RLM_OUTPUT_THRESHOLD_KB = 48
+DEFAULT_TLDR_MIN_FILES = 80
+DEFAULT_TLDR_MIN_CODE_KB = 512
+DEFAULT_AST_GREP_ENABLED = True
 RLM_SOURCE_DIR = Path(__file__).resolve().parent / "rlm"
 RLM_SOURCE_LABEL = "ContinuousClaudeV4.7"
 RLM_DEPLOYMENT_DIR = "rlm"
 RLM_SKILL_PREFIX = "cc-codex-continuous-v47"
 RLM_ROLE_PREFIX = "codex-continuous-v47"
 RLM_OUROS_VERSION = "0.0.7"
+AST_GREP_MCP_PACKAGE = "ast-grep-mcp@0.0.2"
 
 
 def tldr_runtime_venv(deployment: Path, *, ensure_link: bool = True) -> Path:
@@ -104,7 +109,11 @@ def tldr_runtime_venv(deployment: Path, *, ensure_link: bool = True) -> Path:
         root = Path(configured).expanduser()
     else:
         xdg_data = os.environ.get("XDG_DATA_HOME")
-        root = Path(xdg_data).expanduser() if xdg_data else Path.home() / ".local" / "share"
+        root = (
+            Path(xdg_data).expanduser()
+            if xdg_data
+            else Path.home() / ".local" / "share"
+        )
         root = root / "codex-continuous"
     target = (root / LLM_TLDR_VENV).resolve()
     link = deployment / LLM_TLDR_VENV
@@ -118,7 +127,11 @@ def tldr_runtime_venv(deployment: Path, *, ensure_link: bool = True) -> Path:
             if not target.exists() and link.is_dir() and not link.is_symlink():
                 link.rename(target)
             else:
-                shutil.rmtree(link) if link.is_dir() and not link.is_symlink() else link.unlink(missing_ok=True)
+                shutil.rmtree(
+                    link
+                ) if link.is_dir() and not link.is_symlink() else link.unlink(
+                    missing_ok=True
+                )
             link.symlink_to(target, target_is_directory=True)
         else:
             link.symlink_to(target, target_is_directory=True)
@@ -139,7 +152,11 @@ def default_source() -> Path:
 
 def default_codex_home() -> Path:
     configured = os.environ.get("CODEX_HOME")
-    return Path(configured).expanduser().resolve() if configured else (Path.home() / ".codex")
+    return (
+        Path(configured).expanduser().resolve()
+        if configured
+        else (Path.home() / ".codex")
+    )
 
 
 def default_model_cache() -> Path:
@@ -156,7 +173,9 @@ def default_install_config() -> Path:
     return Path(__file__).resolve().with_name(INSTALL_CONFIG_NAME)
 
 
-def load_install_config(path: Path | None = None, *, required: bool = False) -> dict[str, Any]:
+def load_install_config(
+    path: Path | None = None, *, required: bool = False
+) -> dict[str, Any]:
     """Load installer feature switches without reading Codex's config.toml.
 
     The file is deliberately a small, secret-free JSON document. A missing
@@ -176,45 +195,103 @@ def load_install_config(path: Path | None = None, *, required: bool = False) -> 
             "manual_compact_enabled": DEFAULT_MANUAL_COMPACT_ENABLED,
             "shared_model_cache_enabled": DEFAULT_SHARED_MODEL_CACHE_ENABLED,
             "tldr_model": DEFAULT_TLDR_MODEL,
+            "rlm_output_threshold_kb": DEFAULT_RLM_OUTPUT_THRESHOLD_KB,
+            "tldr_min_files": DEFAULT_TLDR_MIN_FILES,
+            "tldr_min_code_kb": DEFAULT_TLDR_MIN_CODE_KB,
+            "ast_grep_enabled": DEFAULT_AST_GREP_ENABLED,
         }
     try:
         raw = json.loads(config_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
-        raise RuntimeError(f"cannot read installer config {config_path}: {error}") from error
+        raise RuntimeError(
+            f"cannot read installer config {config_path}: {error}"
+        ) from error
     if not isinstance(raw, dict):
-        raise RuntimeError(f"installer config {config_path} must contain a JSON object")
+        raise TypeError(f"installer config {config_path} must contain a JSON object")
 
     def read_switch(name: str, default: bool) -> bool:
         section = raw.get(name, {})
         if not isinstance(section, dict):
-            raise RuntimeError(f"installer config {config_path}: {name} must be an object")
+            raise TypeError(f"installer config {config_path}: {name} must be an object")
         value = section.get("enabled", default)
         if not isinstance(value, bool):
-            raise RuntimeError(f"installer config {config_path}: {name}.enabled must be boolean")
+            raise TypeError(
+                f"installer config {config_path}: {name}.enabled must be boolean"
+            )
         return value
 
     def read_nested_switch(section_name: str, name: str, default: bool) -> bool:
         section = raw.get(section_name, {})
         if not isinstance(section, dict):
-            raise RuntimeError(f"installer config {config_path}: {section_name} must be an object")
+            raise TypeError(
+                f"installer config {config_path}: {section_name} must be an object"
+            )
         nested = section.get(name, {})
         if not isinstance(nested, dict):
-            raise RuntimeError(
+            raise TypeError(
                 f"installer config {config_path}: {section_name}.{name} must be an object"
             )
         value = nested.get("enabled", default)
         if not isinstance(value, bool):
-            raise RuntimeError(
+            raise TypeError(
                 f"installer config {config_path}: {section_name}.{name}.enabled must be boolean"
             )
         return value
 
     tldr_section = raw.get("tldr", {})
     if not isinstance(tldr_section, dict):
-        raise RuntimeError(f"installer config {config_path}: tldr must be an object")
+        raise TypeError(f"installer config {config_path}: tldr must be an object")
     tldr_model = tldr_section.get("model", DEFAULT_TLDR_MODEL)
     if not isinstance(tldr_model, str) or not tldr_model.strip():
-        raise RuntimeError(f"installer config {config_path}: tldr.model must be a non-empty string")
+        raise RuntimeError(
+            f"installer config {config_path}: tldr.model must be a non-empty string"
+        )
+
+    rlm_section = raw.get("rlm", {})
+    if not isinstance(rlm_section, dict):
+        raise TypeError(f"installer config {config_path}: rlm must be an object")
+    rlm_threshold = rlm_section.get(
+        "output_threshold_kb", DEFAULT_RLM_OUTPUT_THRESHOLD_KB
+    )
+    if (
+        isinstance(rlm_threshold, bool)
+        or not isinstance(rlm_threshold, int)
+        or rlm_threshold <= 0
+    ):
+        raise RuntimeError(
+            f"installer config {config_path}: rlm.output_threshold_kb must be a positive integer"
+        )
+
+    scale_section = tldr_section.get("scale", {})
+    if not isinstance(scale_section, dict):
+        raise TypeError(f"installer config {config_path}: tldr.scale must be an object")
+    tldr_min_files = scale_section.get("min_files", DEFAULT_TLDR_MIN_FILES)
+    tldr_min_code_kb = scale_section.get("min_code_kb", DEFAULT_TLDR_MIN_CODE_KB)
+    if (
+        isinstance(tldr_min_files, bool)
+        or not isinstance(tldr_min_files, int)
+        or tldr_min_files <= 0
+        or isinstance(tldr_min_code_kb, bool)
+        or not isinstance(tldr_min_code_kb, int)
+        or tldr_min_code_kb <= 0
+    ):
+        raise RuntimeError(
+            f"installer config {config_path}: tldr.scale thresholds must be positive integers"
+        )
+
+    mcp_section = raw.get("mcp", {})
+    if not isinstance(mcp_section, dict):
+        raise TypeError(f"installer config {config_path}: mcp must be an object")
+    ast_grep_section = mcp_section.get("ast_grep", {})
+    if not isinstance(ast_grep_section, dict):
+        raise TypeError(
+            f"installer config {config_path}: mcp.ast_grep must be an object"
+        )
+    ast_grep_enabled = ast_grep_section.get("enabled", DEFAULT_AST_GREP_ENABLED)
+    if not isinstance(ast_grep_enabled, bool):
+        raise TypeError(
+            f"installer config {config_path}: mcp.ast_grep.enabled must be boolean"
+        )
 
     return {
         "subagents_enabled": read_switch("subagents", DEFAULT_SUBAGENTS_ENABLED),
@@ -230,6 +307,10 @@ def load_install_config(path: Path | None = None, *, required: bool = False) -> 
             "memory", "shared_model_cache", DEFAULT_SHARED_MODEL_CACHE_ENABLED
         ),
         "tldr_model": tldr_model.strip().split("/")[-1],
+        "rlm_output_threshold_kb": rlm_threshold,
+        "tldr_min_files": tldr_min_files,
+        "tldr_min_code_kb": tldr_min_code_kb,
+        "ast_grep_enabled": ast_grep_enabled,
     }
 
 
@@ -388,9 +469,19 @@ def _install_llm_tldr(deployment: Path) -> Path:
         )
         if result.returncode != 0 or not python.is_file():
             detail = (result.stderr or result.stdout).strip().splitlines()[-1:]
-            raise RuntimeError(f"creating TLDR virtualenv failed{': ' + detail[0] if detail else ''}")
+            raise RuntimeError(
+                f"creating TLDR virtualenv failed{': ' + detail[0] if detail else ''}"
+            )
     result = subprocess.run(
-        [uv, "pip", "install", "--python", str(python), "--upgrade", f"{LLM_TLDR_PACKAGE}=={LLM_TLDR_VERSION}"],
+        [
+            uv,
+            "pip",
+            "install",
+            "--python",
+            str(python),
+            "--upgrade",
+            f"{LLM_TLDR_PACKAGE}=={LLM_TLDR_VERSION}",
+        ],
         cwd=deployment,
         text=True,
         capture_output=True,
@@ -398,9 +489,15 @@ def _install_llm_tldr(deployment: Path) -> Path:
     )
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip().splitlines()[-1:]
-        raise RuntimeError(f"installing {LLM_TLDR_PACKAGE} failed{': ' + detail[0] if detail else ''}")
+        raise RuntimeError(
+            f"installing {LLM_TLDR_PACKAGE} failed{': ' + detail[0] if detail else ''}"
+        )
     probe = subprocess.run(
-        [str(python), "-c", "import importlib.metadata as m, tldr; print(m.version('llm-tldr')); print(tldr.__file__)"],
+        [
+            str(python),
+            "-c",
+            "import importlib.metadata as m, tldr; print(m.version('llm-tldr')); print(tldr.__file__)",
+        ],
         cwd=deployment,
         text=True,
         capture_output=True,
@@ -435,7 +532,9 @@ def _install_rlm_dependencies(python: Path) -> None:
     )
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip().splitlines()[-1:]
-        raise RuntimeError(f"installing RLM dependencies failed{': ' + detail[0] if detail else ''}")
+        raise RuntimeError(
+            f"installing RLM dependencies failed{': ' + detail[0] if detail else ''}"
+        )
 
 
 def _link_rlm_command(binary: Path) -> None:
@@ -484,7 +583,9 @@ def install_rlm_runtime(deployment: Path, *, install_dependencies: bool = True) 
         python = rlm_venv / "bin" / "python"
         if result.returncode != 0 or not python.is_file():
             detail = (result.stderr or result.stdout).strip().splitlines()[-1:]
-            raise RuntimeError(f"creating RLM virtualenv failed{': ' + detail[0] if detail else ''}")
+            raise RuntimeError(
+                f"creating RLM virtualenv failed{': ' + detail[0] if detail else ''}"
+            )
     if install_dependencies and python.is_file():
         _install_rlm_dependencies(python)
     if not python.is_file():
@@ -493,7 +594,7 @@ def install_rlm_runtime(deployment: Path, *, install_dependencies: bool = True) 
     launcher.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     launcher.write_text(
         "#!/bin/sh\n"
-        f"exec {shlex.quote(str(python))} {shlex.quote(str(harness))} \"$@\"\n",
+        f'exec {shlex.quote(str(python))} {shlex.quote(str(harness))} "$@"\n',
         encoding="utf-8",
     )
     os.chmod(launcher, 0o755)
@@ -531,12 +632,16 @@ def install_tldr_runtime(
     """
 
     if semantic_binary:
-        log("ignored --tldr-semantic-binary: llm-tldr already provides the Python/FAISS semantic implementation")
+        log(
+            "ignored --tldr-semantic-binary: llm-tldr already provides the Python/FAISS semantic implementation"
+        )
     python = _install_llm_tldr(deployment)
     binary_dir = deployment / "bin"
     binary_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     wrapper = binary_dir / "tldr"
-    shutil.copy2(Path(__file__).resolve().with_name("codex_continuous_tldr.py"), wrapper)
+    shutil.copy2(
+        Path(__file__).resolve().with_name("codex_continuous_tldr.py"), wrapper
+    )
     os.chmod(wrapper, 0o755)
     shutil.copy2(
         Path(__file__).resolve().with_name("codex_continuous_tldr_daemon.py"),
@@ -564,12 +669,155 @@ def install_tldr_runtime(
     return wrapper
 
 
+def install_ast_grep_mcp(deployment: Path) -> dict[str, Any]:
+    """Install and smoke-test a local AST MCP server without npx startup fetches."""
+
+    node = shutil.which("node")
+    npm = shutil.which("npm")
+    if not node or not npm:
+        return {"available": False, "reason": "node and npm are required"}
+    package_root = deployment / "ast-grep-mcp"
+    package_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    binary = package_root / "node_modules" / ".bin" / "ast-grep-mcp"
+    if not binary.is_file():
+        try:
+            result = subprocess.run(
+                [
+                    npm,
+                    "install",
+                    "--no-save",
+                    "--no-package-lock",
+                    AST_GREP_MCP_PACKAGE,
+                ],
+                cwd=package_root,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=120,
+            )
+        except (OSError, subprocess.SubprocessError) as error:
+            return {
+                "available": False,
+                "reason": "npm install failed",
+                "detail": str(error),
+            }
+        if result.returncode != 0:
+            return {
+                "available": False,
+                "reason": "npm install failed",
+                "detail": (result.stderr or result.stdout)[-500:],
+            }
+    if not binary.is_file():
+        return {"available": False, "reason": "ast-grep-mcp binary was not installed"}
+    local_bin = package_root / "node_modules" / ".bin"
+    process_environment = os.environ.copy()
+    process_environment["PATH"] = (
+        f"{local_bin}{os.pathsep}{process_environment.get('PATH', '')}"
+    )
+
+    smoke_file = package_root / ".ast-grep-mcp-smoke.py"
+    smoke_file.write_text("def smoke_function():\n    return True\n", encoding="utf-8")
+    process = subprocess.Popen(
+        [node, str(binary)],
+        cwd=package_root,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=process_environment,
+    )
+
+    def request(message: dict[str, Any]) -> dict[str, Any]:
+        assert process.stdin is not None and process.stdout is not None
+        process.stdin.write(json.dumps(message, ensure_ascii=False) + "\n")
+        process.stdin.flush()
+        ready, _, _ = select.select([process.stdout], [], [], 15)
+        if not ready:
+            raise TimeoutError("AST MCP response timed out")
+        response = json.loads(process.stdout.readline())
+        if not isinstance(response, dict):
+            raise TypeError("AST MCP returned a non-object response")
+        return response
+
+    try:
+        initialized = request(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": {},
+                    "clientInfo": {"name": "codex-continuous-patcher", "version": "1"},
+                },
+            }
+        )
+        if "result" not in initialized:
+            raise RuntimeError("AST MCP initialize failed")
+        assert process.stdin is not None
+        process.stdin.write(
+            json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}) + "\n"
+        )
+        process.stdin.flush()
+        tools = request(
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}
+        )
+        names = {
+            item.get("name")
+            for item in tools.get("result", {}).get("tools", [])
+            if isinstance(item, dict)
+        }
+        if "ast_grep_search" not in names:
+            raise RuntimeError("AST MCP structural search tool is unavailable")
+        search = request(
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {
+                    "name": "ast_grep_search",
+                    "arguments": {
+                        "pattern": "def $$$:",
+                        "lang": "python",
+                        "paths": [smoke_file.name],
+                        "workspaceRoot": str(package_root),
+                    },
+                },
+            }
+        )
+        if "result" not in search or search.get("result", {}).get("isError"):
+            raise RuntimeError("AST MCP structural search failed")
+    except (OSError, json.JSONDecodeError, TimeoutError, RuntimeError) as error:
+        return {
+            "available": False,
+            "reason": "ast-grep-mcp smoke test failed",
+            "detail": str(error),
+        }
+    finally:
+        smoke_file.unlink(missing_ok=True)
+        process.terminate()
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+    return {
+        "available": True,
+        "command": node,
+        "args": [str(binary)],
+        "env": {"PATH": f"{local_bin}{os.pathsep}${{PATH}}"},
+    }
+
+
 def write_runtime_env(
     deployment: Path,
     previous_deployment: Path | None = None,
     *,
     tldr_model: str = DEFAULT_TLDR_MODEL,
     shared_model_cache_enabled: bool = DEFAULT_SHARED_MODEL_CACHE_ENABLED,
+    rlm_output_threshold_kb: int = DEFAULT_RLM_OUTPUT_THRESHOLD_KB,
+    tldr_min_files: int = DEFAULT_TLDR_MIN_FILES,
+    tldr_min_code_kb: int = DEFAULT_TLDR_MIN_CODE_KB,
 ) -> Path:
     """Write the default local PostgreSQL/embedding configuration.
 
@@ -590,7 +838,12 @@ def write_runtime_env(
         "EMBEDDING_PROVIDER": "local",
         "EMBEDDING_MODEL": "BAAI/bge-large-en-v1.5",
         "CODEX_CONTINUOUS_TLDR_MODEL": tldr_model,
-        "CODEX_CONTINUOUS_SHARED_MODEL_CACHE": "true" if shared_model_cache_enabled else "false",
+        "CODEX_CONTINUOUS_RLM_OUTPUT_THRESHOLD": str(rlm_output_threshold_kb * 1024),
+        "CODEX_CONTINUOUS_TLDR_MIN_FILES": str(tldr_min_files),
+        "CODEX_CONTINUOUS_TLDR_MIN_CODE_KB": str(tldr_min_code_kb),
+        "CODEX_CONTINUOUS_SHARED_MODEL_CACHE": "true"
+        if shared_model_cache_enabled
+        else "false",
         "TRACE_TO_BRAINTRUST": "false",
         "BRAINTRUST_CC_PROJECT": "codex",
         "CODEX_CONTINUOUS_DISABLE_SUBAGENTS": "1",
@@ -618,6 +871,11 @@ def write_runtime_env(
     merged["CODEX_CONTINUOUS_SHARED_MODEL_CACHE"] = (
         "true" if shared_model_cache_enabled else "false"
     )
+    merged["CODEX_CONTINUOUS_RLM_OUTPUT_THRESHOLD"] = str(
+        rlm_output_threshold_kb * 1024
+    )
+    merged["CODEX_CONTINUOUS_TLDR_MIN_FILES"] = str(tldr_min_files)
+    merged["CODEX_CONTINUOUS_TLDR_MIN_CODE_KB"] = str(tldr_min_code_kb)
     if shared_model_cache_enabled:
         merged["CODEX_CONTINUOUS_MODEL_CACHE"] = str(model_cache)
     else:
@@ -682,12 +940,18 @@ def merge_global_rules(source: Path, codex_home: Path) -> dict[str, Any]:
         "use-scout-not-explore.md": "Claude agent names and tools are not available in Codex",
     }
     adopted = [name for name in compatible if (source_rules / name).is_file()]
-    skipped = {name: reason for name, reason in not_imported.items() if (source_rules / name).is_file()}
+    skipped = {
+        name: reason
+        for name, reason in not_imported.items()
+        if (source_rules / name).is_file()
+    }
     if not adopted:
         return {"installed": False, "adopted": [], "not_imported": skipped}
 
     def adapted_rule(name: str) -> str:
-        source_text = (source_rules / name).read_text(encoding="utf-8", errors="replace").strip()
+        source_text = (
+            (source_rules / name).read_text(encoding="utf-8", errors="replace").strip()
+        )
         # These rules are instruction documents rather than executable code.
         # Rewrite the Claude-specific runtime paths and slash command names so
         # the same guidance points at this deployment's Codex resources.
@@ -733,9 +997,11 @@ def merge_global_rules(source: Path, codex_home: Path) -> dict[str, Any]:
     ]
     for name in adopted:
         body.extend([f"### {name}", "", adapted_rule(name), ""])
-    body.extend([
-        RULES_END,
-    ])
+    body.extend(
+        [
+            RULES_END,
+        ]
+    )
     updated = (base + "\n\n" if base else "") + "\n".join(body) + "\n"
     _atomic_text_write(path, updated)
     return {
@@ -768,7 +1034,10 @@ def _table_bounds(lines: list[str], table: str) -> tuple[int, int] | None:
     start = next((i for i, line in enumerate(lines) if header.match(line)), None)
     if start is None:
         return None
-    end = next((i for i in range(start + 1, len(lines)) if re.match(r"^\s*\[\[?", lines[i])), len(lines))
+    end = next(
+        (i for i in range(start + 1, len(lines)) if re.match(r"^\s*\[\[?", lines[i])),
+        len(lines),
+    )
     return start, end
 
 
@@ -795,7 +1064,9 @@ def set_managed_setting(config_path: Path, table: str, key: str, enabled: bool) 
         parsed = tomllib.loads(contents)
         table_value = parsed.get(table)
         if table_value is not None and not isinstance(table_value, dict):
-            raise RuntimeError(f"cannot safely edit inline {table} value in {config_path}")
+            raise RuntimeError(
+                f"cannot safely edit inline {table} value in {config_path}"
+            )
     else:
         parsed = {}
     lines = contents.splitlines()
@@ -809,12 +1080,18 @@ def set_managed_setting(config_path: Path, table: str, key: str, enabled: bool) 
             previous = match.group(2)
         elif re.match(rf"^\s*{re.escape(key)}\s*=", original):
             previous = _encode_original(original)
-        return f"{key} = {rendered} # {SETTING_MARKER}:{table}.{key}={rendered}:{previous}"
+        return (
+            f"{key} = {rendered} # {SETTING_MARKER}:{table}.{key}={rendered}:{previous}"
+        )
 
     if bounds:
         start, end = bounds
         key_line = next(
-            (i for i in range(start + 1, end) if re.match(rf"^\s*{re.escape(key)}\s*=", lines[i])),
+            (
+                i
+                for i in range(start + 1, end)
+                if re.match(rf"^\s*{re.escape(key)}\s*=", lines[i])
+            ),
             None,
         )
         if key_line is not None:
@@ -825,13 +1102,20 @@ def set_managed_setting(config_path: Path, table: str, key: str, enabled: bool) 
         # A nested table may have implicitly created [features]/[agents]. A
         # dotted root assignment can coexist without redefining that table.
         root_line = f"{table}.{key} = {rendered} # {SETTING_MARKER}:{table}.{key}={rendered}:absent"
-        first_table = next((i for i, line in enumerate(lines) if re.match(r"^\s*\[\[?", line)), len(lines))
+        first_table = next(
+            (i for i, line in enumerate(lines) if re.match(r"^\s*\[\[?", line)),
+            len(lines),
+        )
         lines.insert(first_table, root_line)
     else:
         if re.search(rf"^\s*{re.escape(table)}\s*=", contents, re.MULTILINE):
-            raise RuntimeError(f"cannot safely edit inline {table} value in {config_path}")
+            raise RuntimeError(
+                f"cannot safely edit inline {table} value in {config_path}"
+            )
         suffix = "\n" if lines and lines[-1].strip() else ""
-        lines.extend([suffix, f"[{table}] # {SETTING_MARKER}-created-table", replacement("")])
+        lines.extend(
+            [suffix, f"[{table}] # {SETTING_MARKER}-created-table", replacement("")]
+        )
 
     _atomic_config_write(config_path, "\n".join(lines))
 
@@ -843,7 +1127,9 @@ def restore_managed_setting(config_path: Path, table: str, key: str) -> bool:
     lines = contents.splitlines()
     bounds = _table_bounds(lines, table)
     marker_re = _setting_marker(table, key)
-    dotted_re = re.compile(rf"^\s*{re.escape(table)}\.{re.escape(key)}\s*=\s*(true|false)\s+(# .*?)$")
+    dotted_re = re.compile(
+        rf"^\s*{re.escape(table)}\.{re.escape(key)}\s*=\s*(true|false)\s+(# .*?)$"
+    )
     changed = False
 
     def restore(line: str) -> str | None:
@@ -883,8 +1169,18 @@ def restore_managed_setting(config_path: Path, table: str, key: str) -> bool:
                     lines[i] = restored
                 break
         if "-created-table" in lines[start]:
-            end = next((i for i in range(start + 1, len(lines)) if re.match(r"^\s*\[\[?", lines[i])), len(lines))
-            if not any(line.strip() and not line.lstrip().startswith("#") for line in lines[start + 1 : end]):
+            end = next(
+                (
+                    i
+                    for i in range(start + 1, len(lines))
+                    if re.match(r"^\s*\[\[?", lines[i])
+                ),
+                len(lines),
+            )
+            if not any(
+                line.strip() and not line.lstrip().startswith("#")
+                for line in lines[start + 1 : end]
+            ):
                 del lines[start:end]
             else:
                 lines[start] = re.sub(r"\s+# .*?-created-table", "", lines[start])
@@ -904,11 +1200,17 @@ def set_subagent_feature(config_path: Path, enabled: bool) -> None:
     set_managed_setting(config_path, "agents", "enabled", enabled)
     if not config_path.is_file():
         return
-    features = tomllib.loads(config_path.read_text(encoding="utf-8")).get("features", {})
-    multi_agent_v2 = features.get("multi_agent_v2") if isinstance(features, dict) else None
+    features = tomllib.loads(config_path.read_text(encoding="utf-8")).get(
+        "features", {}
+    )
+    multi_agent_v2 = (
+        features.get("multi_agent_v2") if isinstance(features, dict) else None
+    )
     if multi_agent_v2 is not None:
         if isinstance(multi_agent_v2, dict):
-            set_managed_setting(config_path, "features.multi_agent_v2", "enabled", enabled)
+            set_managed_setting(
+                config_path, "features.multi_agent_v2", "enabled", enabled
+            )
         elif isinstance(multi_agent_v2, bool):
             set_managed_setting(config_path, "features", "multi_agent_v2", enabled)
 
@@ -916,14 +1218,18 @@ def set_subagent_feature(config_path: Path, enabled: bool) -> None:
 def merge_mcp_config(config_path: Path, catalog_path: Path) -> dict[str, Any]:
     """Merge active generated MCP definitions without replacing user servers."""
 
-    catalog = tomllib.loads(catalog_path.read_text(encoding="utf-8")) if catalog_path.is_file() else {}
+    catalog = (
+        tomllib.loads(catalog_path.read_text(encoding="utf-8"))
+        if catalog_path.is_file()
+        else {}
+    )
     generated_servers = catalog.get("mcp_servers", {})
     original = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
     base = _strip_block(original, MCP_BEGIN, MCP_END).rstrip()
     parsed = tomllib.loads(base) if base.strip() else {}
     existing = parsed.get("mcp_servers", {})
     if not isinstance(existing, dict):
-        raise RuntimeError("config.toml mcp_servers must be a table")
+        raise TypeError("config.toml mcp_servers must be a table")
     selected: list[str] = []
     lines = [MCP_BEGIN]
     for name, server in sorted(generated_servers.items()):
@@ -938,13 +1244,28 @@ def merge_mcp_config(config_path: Path, catalog_path: Path) -> dict[str, Any]:
         for key, value in server.items():
             if key in {"env", "http_headers", "env_http_headers", "enabled"}:
                 continue
-            section_lines.append(f"{key} = {json.dumps(value, ensure_ascii=False)}" if isinstance(value, str) else f"{key} = {json.dumps(value)}")
-        for table_name, table in (("env", env), ("http_headers", headers), ("env_http_headers", env_headers)):
+            section_lines.append(
+                f"{key} = {json.dumps(value, ensure_ascii=False)}"
+                if isinstance(value, str)
+                else f"{key} = {json.dumps(value)}"
+            )
+        for table_name, table in (
+            ("env", env),
+            ("http_headers", headers),
+            ("env_http_headers", env_headers),
+        ):
             if not isinstance(table, dict) or not table:
                 continue
-            section_lines.extend(["", f"[mcp_servers.{json.dumps(name, ensure_ascii=False)}.{table_name}]"])
+            section_lines.extend(
+                [
+                    "",
+                    f"[mcp_servers.{json.dumps(name, ensure_ascii=False)}.{table_name}]",
+                ]
+            )
             for key, value in sorted(table.items()):
-                section_lines.append(f"{json.dumps(str(key), ensure_ascii=False)} = {json.dumps(str(value), ensure_ascii=False)}")
+                section_lines.append(
+                    f"{json.dumps(str(key), ensure_ascii=False)} = {json.dumps(str(value), ensure_ascii=False)}"
+                )
         lines.extend(section_lines + [""])
         selected.append(name)
     if selected:
@@ -953,10 +1274,23 @@ def merge_mcp_config(config_path: Path, catalog_path: Path) -> dict[str, Any]:
     else:
         new_contents = base + ("\n" if base else "")
     _atomic_config_write(config_path, new_contents)
-    return {"installed": selected, "collisions": sorted(set(generated_servers) - set(selected) - {name for name, value in generated_servers.items() if isinstance(value, dict) and value.get("enabled") is False})}
+    return {
+        "installed": selected,
+        "collisions": sorted(
+            set(generated_servers)
+            - set(selected)
+            - {
+                name
+                for name, value in generated_servers.items()
+                if isinstance(value, dict) and value.get("enabled") is False
+            }
+        ),
+    }
 
 
-def merge_agent_roles(config_path: Path, agents: dict[str, Any], enabled: bool) -> dict[str, Any]:
+def merge_agent_roles(
+    config_path: Path, agents: dict[str, Any], enabled: bool
+) -> dict[str, Any]:
     """Register converted agent roles only when the user opts in."""
 
     original = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
@@ -964,7 +1298,7 @@ def merge_agent_roles(config_path: Path, agents: dict[str, Any], enabled: bool) 
     parsed = tomllib.loads(base) if base.strip() else {}
     configured = parsed.get("agents", {})
     if not isinstance(configured, dict):
-        raise RuntimeError("config.toml agents must be a table")
+        raise TypeError("config.toml agents must be a table")
     lines = [AGENTS_BEGIN]
     installed: list[str] = []
     skipped: list[str] = []
@@ -1001,12 +1335,15 @@ def install_native_resources(
     *,
     enable_subagents: bool = False,
     enable_dashboard: bool = True,
+    ast_grep_server: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Install Codex-discoverable skills and selected optional resources."""
 
     native_dir = deployment / "codex-native"
     native_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-    skills_result = convert_skills(source / ".claude", native_dir, codex_home=codex_home)
+    skills_result = convert_skills(
+        source / ".claude", native_dir, codex_home=codex_home
+    )
     rlm_claude = rlm_source() / "claude"
     rlm_skills_result = convert_skills(
         rlm_claude,
@@ -1019,9 +1356,12 @@ def install_native_resources(
     if enable_subagents:
         agents_result = convert_agents(source / ".claude", native_dir)
         agents_result["enabled"] = True
-        agents_result["reason"] = "Converted roles are registered in Codex by this installation."
+        agents_result["reason"] = (
+            "Converted roles are registered in Codex by this installation."
+        )
         (native_dir / "agents-manifest.json").write_text(
-            json.dumps(agents_result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+            json.dumps(agents_result, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
         )
         rlm_agents_result = convert_agents(
             rlm_claude,
@@ -1032,9 +1372,12 @@ def install_native_resources(
             config_root="continuous-claude-v3/codex-native/agents",
         )
         rlm_agents_result["enabled"] = True
-        rlm_agents_result["reason"] = "v4.7 RLM roles are registered by this installation."
+        rlm_agents_result["reason"] = (
+            "v4.7 RLM roles are registered by this installation."
+        )
         (native_dir / "rlm-agents-manifest.json").write_text(
-            json.dumps(rlm_agents_result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+            json.dumps(rlm_agents_result, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
         )
     else:
         agents_result = {
@@ -1045,7 +1388,8 @@ def install_native_resources(
             "skipped": [],
         }
         (native_dir / "agents-manifest.json").write_text(
-            json.dumps(agents_result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+            json.dumps(agents_result, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
         )
         rlm_agents_result = {
             "version": 1,
@@ -1056,9 +1400,12 @@ def install_native_resources(
             "skipped": [],
         }
         (native_dir / "rlm-agents-manifest.json").write_text(
-            json.dumps(rlm_agents_result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+            json.dumps(rlm_agents_result, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
         )
-    mcp_filter_source = Path(__file__).resolve().with_name("codex_continuous_mcp_filter.py")
+    mcp_filter_source = (
+        Path(__file__).resolve().with_name("codex_continuous_mcp_filter.py")
+    )
     mcp_filter_target = deployment / mcp_filter_source.name
     shutil.copy2(mcp_filter_source, mcp_filter_target)
     os.chmod(mcp_filter_target, 0o755)
@@ -1067,6 +1414,18 @@ def install_native_resources(
         native_dir,
         codex_claude=deployment / ".claude",
         mcp_filter_path=deployment / "codex_continuous_mcp_filter.py",
+        server_overrides=(
+            {
+                "ast-grep": {
+                    "command": ast_grep_server["command"],
+                    "args": ast_grep_server["args"],
+                    "enabled": True,
+                    "env": ast_grep_server.get("env", {}),
+                }
+            }
+            if ast_grep_server and ast_grep_server.get("available")
+            else None
+        ),
     )
     native_manifest = {
         "version": 1,
@@ -1084,13 +1443,15 @@ def install_native_resources(
         "dashboard_enabled": enable_dashboard,
     }
     (native_dir / "native-manifest.json").write_text(
-        json.dumps(native_manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        json.dumps(native_manifest, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
     )
     scripts = [
         "codex_continuous_status.py",
         "codex_continuous_tldr_daemon.py",
         "codex_continuous_search_router.py",
         "codex_continuous_semantic_runtime.py",
+        "codex_continuous_repo_scale.py",
         "codex_continuous_semantic_index.py",
         "codex_continuous_shell_router.py",
         "codex_continuous_semantic_warm.py",
@@ -1110,7 +1471,9 @@ def install_native_resources(
     # itself is part of this adapter and must track the source tree.
     tldr_wrapper = deployment / "bin" / "tldr"
     tldr_wrapper.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    shutil.copy2(Path(__file__).resolve().with_name("codex_continuous_tldr.py"), tldr_wrapper)
+    shutil.copy2(
+        Path(__file__).resolve().with_name("codex_continuous_tldr.py"), tldr_wrapper
+    )
     os.chmod(tldr_wrapper, 0o755)
     return native_manifest
 
@@ -1169,7 +1532,9 @@ def _docker_env(deployment: Path) -> dict[str, str]:
     return env
 
 
-def _run_docker(command: list[str], deployment: Path, cwd: Path) -> subprocess.CompletedProcess[str]:
+def _run_docker(
+    command: list[str], deployment: Path, cwd: Path
+) -> subprocess.CompletedProcess[str]:
     env = _docker_env(deployment)
     result = subprocess.run(
         command, cwd=cwd, env=env, text=True, capture_output=True, check=False
@@ -1200,7 +1565,9 @@ def start_database_stack(deployment: Path) -> None:
     result = _run_docker(command, deployment, compose_dir)
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip().splitlines()[-1:]
-        raise RuntimeError(f"Docker pgvector startup failed{': ' + detail[0] if detail else ''}")
+        raise RuntimeError(
+            f"Docker pgvector startup failed{': ' + detail[0] if detail else ''}"
+        )
     ready_command = [
         docker,
         "exec",
@@ -1304,11 +1671,15 @@ def adapt_braintrust_plugin(deployment: Path) -> None:
         '[ -f "$HOME/.claude/.env" ] && set -a && source "$HOME/.claude/.env" && set +a',
         "# The Codex bridge loads the deployment .env before launching this hook.",
     )
-    contents = contents.replace('BRAINTRUST_CC_PROJECT:-claude-code', 'BRAINTRUST_CC_PROJECT:-codex')
+    contents = contents.replace(
+        "BRAINTRUST_CC_PROJECT:-claude-code", "BRAINTRUST_CC_PROJECT:-codex"
+    )
     common.write_text(contents, encoding="utf-8")
     for script in (plugin / "hooks").glob("*.sh"):
         content = script.read_text(encoding="utf-8")
-        content = content.replace("Claude Code", "Codex").replace("claude-code", "codex")
+        content = content.replace("Claude Code", "Codex").replace(
+            "claude-code", "codex"
+        )
         script.write_text(content, encoding="utf-8")
 
 
@@ -1330,7 +1701,11 @@ def adapt_learning_hooks(deployment: Path) -> None:
     """Point copied learning hooks at the deployment OPC runtime."""
 
     hooks_dir = deployment / ".claude" / "hooks" / "dist"
-    for name in ("auto-learning.mjs", "user-confirm-learning.mjs", "subagent-learning.mjs"):
+    for name in (
+        "auto-learning.mjs",
+        "user-confirm-learning.mjs",
+        "subagent-learning.mjs",
+    ):
         path = hooks_dir / name
         if not path.is_file():
             continue
@@ -1359,9 +1734,9 @@ def adapt_continuity_handoff_hook(deployment: Path) -> None:
         "  const sessionType = input.source || input.type;\n"
         "  // CODEX_CONTINUOUS_SESSION_SCOPED_HANDOFFS: automatic checkpoints belong\n"
         "  // to one Codex session. New sessions must use explicit /resume_handoff.\n"
-        "  const currentSessionShort = String(input.session_id || \"\").replace(/-/g, \"\").slice(0, 8).toLowerCase();\n"
-        "  const compactLike = sessionType === \"compact\" || sessionType === \"clear\";\n"
-        "  const standardCodexStart = !sessionType || [\"startup\", \"resume\", \"compact\", \"clear\"].includes(sessionType);\n"
+        '  const currentSessionShort = String(input.session_id || "").replace(/-/g, "").slice(0, 8).toLowerCase();\n'
+        '  const compactLike = sessionType === "compact" || sessionType === "clear";\n'
+        '  const standardCodexStart = !sessionType || ["startup", "resume", "compact", "clear"].includes(sessionType);\n'
     )
     if session_needle not in contents:
         log("could not adapt continuity hook: session type selector was not found")
@@ -1372,10 +1747,10 @@ def adapt_continuity_handoff_hook(deployment: Path) -> None:
     ledger_replacement = (
         "      let mostRecentLedger = null;\n"
         "      if (compactLike && currentSessionShort) {\n"
-        "        const codexDir = path.join(handoffsDir, \"codex\");\n"
+        '        const codexDir = path.join(handoffsDir, "codex");\n'
         "        if (fs.existsSync(codexDir)) {\n"
         "          const currentFiles = fs.readdirSync(codexDir).filter((f) => {\n"
-        "            if (!f.startsWith(\"auto-handoff-\") || !isHandoffFile(f)) return false;\n"
+        '            if (!f.startsWith("auto-handoff-") || !isHandoffFile(f)) return false;\n'
         "            if (!f.includes(`-${currentSessionShort}-`)) return false;\n"
         "            const age = Date.now() - fs.statSync(path.join(codexDir, f)).mtime.getTime();\n"
         "            return age >= 0 && age <= 24 * 60 * 60 * 1000;\n"
@@ -1386,28 +1761,32 @@ def adapt_continuity_handoff_hook(deployment: Path) -> None:
         "          });\n"
         "          if (currentFiles.length > 0) {\n"
         "            const handoffPath = path.join(codexDir, currentFiles[0]);\n"
-        "            const content = fs.readFileSync(handoffPath, \"utf-8\");\n"
+        '            const content = fs.readFileSync(handoffPath, "utf-8");\n'
         "            const yamlFields = extractYamlFields(content);\n"
         "            if (yamlFields) {\n"
         "              mostRecentLedger = {\n"
         "                content,\n"
-        "                sessionName: \"codex\",\n"
+        '                sessionName: "codex",\n'
         "                handoffPath,\n"
         "                mtime: fs.statSync(handoffPath).mtime.getTime(),\n"
-        "                goalSummary: (yamlFields.goal || \"No goal found\").substring(0, 100),\n"
-        "                currentFocus: yamlFields.now || \"Unknown\"\n"
+        '                goalSummary: (yamlFields.goal || "No goal found").substring(0, 100),\n'
+        '                currentFocus: yamlFields.now || "Unknown"\n'
         "              };\n"
         "            }\n"
         "          }\n"
         "        }\n"
         "      }\n"
     )
-    adapted, ledger_replacements = ledger_needle.subn(ledger_replacement, adapted, count=1)
+    adapted, ledger_replacements = ledger_needle.subn(
+        ledger_replacement, adapted, count=1
+    )
     if ledger_replacements == 0:
         log("could not adapt continuity hook: ledger selector was not found")
         return
 
-    loop_needle = re.compile(r"(?m)^[ \t]*for \(const sessionName of sessionDirs\) \{\n")
+    loop_needle = re.compile(
+        r"(?m)^[ \t]*for \(const sessionName of sessionDirs\) \{\n"
+    )
     loop_replacement = (
         "      // Do not scan another session when Codex owns the lifecycle event.\n"
         "      if (standardCodexStart) {\n"
@@ -1420,6 +1799,7 @@ def adapt_continuity_handoff_hook(deployment: Path) -> None:
         log("could not adapt continuity hook: session directory loop was not found")
         return
     path.write_text(adapted, encoding="utf-8")
+
 
 def braintrust_hook_specs(
     deployment: Path, enabled: bool | None = None
@@ -1435,7 +1815,12 @@ def braintrust_hook_specs(
     hooks = deployment / ".claude" / "plugins" / "braintrust-tracing" / "hooks"
     return [
         ("SessionStart", "braintrust_session_start", hooks / "session_start.sh", False),
-        ("UserPromptSubmit", "braintrust_user_prompt_submit", hooks / "user_prompt_submit.sh", False),
+        (
+            "UserPromptSubmit",
+            "braintrust_user_prompt_submit",
+            hooks / "user_prompt_submit.sh",
+            False,
+        ),
         ("PostToolUse", "braintrust_post_tool_use", hooks / "post_tool_use.sh", True),
         ("Stop", "braintrust_stop", hooks / "stop_hook.sh", False),
         ("SessionEnd", "braintrust_session_end", hooks / "session_end.sh", False),
@@ -1466,7 +1851,9 @@ def build_hooks(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     settings = load_settings(source)
     if enable_braintrust is None:
-        enable_braintrust = os.environ.get("CODEX_CONTINUOUS_ENABLE_BRAINTRUST", "").lower() in {
+        enable_braintrust = os.environ.get(
+            "CODEX_CONTINUOUS_ENABLE_BRAINTRUST", ""
+        ).lower() in {
             "1",
             "true",
             "yes",
@@ -1578,7 +1965,9 @@ def build_hooks(
     # v4.7 RLM hooks are registered independently from the v3 source hooks.
     # Both boundaries run before the tool: Read gets a bounded first window,
     # while Bash is rewritten to execute through the output-capturing runner.
-    rlm_read_hook = deployment / RLM_DEPLOYMENT_DIR / "claude" / "hooks" / "tldr-read.mjs"
+    rlm_read_hook = (
+        deployment / RLM_DEPLOYMENT_DIR / "claude" / "hooks" / "tldr-read.mjs"
+    )
     if rlm_read_hook.is_file():
         hook_id = "codex_rlm_tldr_read"
         command = f"node {shlex.quote(str(rlm_read_hook))}"
@@ -1699,7 +2088,10 @@ def build_hooks(
                 600,
                 max(
                     30,
-                    sum(int(hook.get("timeout") or hook_timeout(event, {})) for hook in event_hooks),
+                    sum(
+                        int(hook.get("timeout") or hook_timeout(event, {}))
+                        for hook in event_hooks
+                    ),
                 ),
             )
         bundled[event] = [
@@ -1716,9 +2108,14 @@ def build_hooks(
     generated = bundled
 
     manifest_path = deployment / "hooks-manifest.json"
-    manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
     os.chmod(manifest_path, 0o600)
-    return manifest, {"description": "Continuous Claude v3 + v4.7 RLM adapted for Codex", "hooks": generated}
+    return manifest, {
+        "description": "Continuous Claude v3 + v4.7 RLM adapted for Codex",
+        "hooks": generated,
+    }
 
 
 def merge_hooks_file(path: Path, generated: dict[str, Any]) -> dict[str, Any]:
@@ -1746,14 +2143,20 @@ def merge_hooks_file(path: Path, generated: dict[str, Any]) -> dict[str, Any]:
             if bridge_marker not in serialized:
                 retained.append(group)
         hooks[event] = retained + generated_groups
-    existing["description"] = generated.get("description", existing.get("description", ""))
+    existing["description"] = generated.get(
+        "description", existing.get("description", "")
+    )
     existing["hooks"] = hooks
-    path.write_text(json.dumps(existing, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(existing, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
     os.chmod(path, 0o600)
     return existing
 
 
-def _read_json_lines(process: subprocess.Popen[bytes], response_id: int, timeout: float) -> dict[str, Any] | None:
+def _read_json_lines(
+    process: subprocess.Popen[bytes], response_id: int, timeout: float
+) -> dict[str, Any] | None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         remaining = max(0.05, deadline - time.monotonic())
@@ -1814,7 +2217,9 @@ def discover_hook_entries(codex_bin: str, cwd: Path) -> list[dict[str, Any]]:
         entries: list[dict[str, Any]] = []
         for item in response.get("result", {}).get("data", []):
             if isinstance(item, dict):
-                entries.extend(hook for hook in item.get("hooks", []) if isinstance(hook, dict))
+                entries.extend(
+                    hook for hook in item.get("hooks", []) if isinstance(hook, dict)
+                )
         return entries
     finally:
         process.terminate()
@@ -1832,23 +2237,36 @@ def strip_state_block(contents: str) -> str:
     return pattern.sub("\n", contents)
 
 
-def write_trust_state(config_path: Path, entries: list[dict[str, Any]], hooks_path: Path) -> int:
+def write_trust_state(
+    config_path: Path, entries: list[dict[str, Any]], hooks_path: Path
+) -> int:
     trusted = [
         entry
         for entry in entries
-        if (entry.get("enabled") if "enabled" in entry else entry.get("isEnabled")) is True
+        if (entry.get("enabled") if "enabled" in entry else entry.get("isEnabled"))
+        is True
         and (entry.get("current_hash") or entry.get("currentHash"))
-        and str(entry.get("source_path") or entry.get("sourcePath") or "") == str(hooks_path)
+        and str(entry.get("source_path") or entry.get("sourcePath") or "")
+        == str(hooks_path)
     ]
     original = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
     base = strip_state_block(original).rstrip() + ("\n" if original.strip() else "")
-    lines = [STATE_BEGIN, "# Generated from Codex hooks/list; rerun install.py after hook changes."]
+    lines = [
+        STATE_BEGIN,
+        "# Generated from Codex hooks/list; rerun install.py after hook changes.",
+    ]
     for entry in sorted(trusted, key=lambda value: str(value.get("key", ""))):
         key = entry.get("key")
         digest = entry.get("current_hash") or entry.get("currentHash")
         if not isinstance(key, str) or not isinstance(digest, str):
             continue
-        lines.extend([f"[hooks.state.{json.dumps(key, ensure_ascii=False)}]", f"trusted_hash = {json.dumps(digest)}", ""])
+        lines.extend(
+            [
+                f"[hooks.state.{json.dumps(key, ensure_ascii=False)}]",
+                f"trusted_hash = {json.dumps(digest)}",
+                "",
+            ]
+        )
     lines.append(STATE_END)
     new_contents = base + "\n".join(lines) + "\n"
     config_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -1863,7 +2281,9 @@ def write_trust_state(config_path: Path, entries: list[dict[str, Any]], hooks_pa
     return len(trusted)
 
 
-def write_record(deployment: Path, source: Path, hooks_path: Path, config_path: Path) -> None:
+def write_record(
+    deployment: Path, source: Path, hooks_path: Path, config_path: Path
+) -> None:
     record = {
         "installed_at": datetime.now(timezone.utc).isoformat(),  # noqa: UP017
         "source": str(source),
@@ -1897,12 +2317,16 @@ def uninstall(codex_home: Path) -> int:
                 hooks[event] = [
                     group
                     for group in groups
-                    if "codex_continuous_bridge.py" not in json.dumps(group, ensure_ascii=False)
+                    if "codex_continuous_bridge.py"
+                    not in json.dumps(group, ensure_ascii=False)
                 ]
                 if not hooks[event]:
                     del hooks[event]
             hooks_config["hooks"] = hooks
-            hooks_path.write_text(json.dumps(hooks_config, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            hooks_path.write_text(
+                json.dumps(hooks_config, indent=2, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
             os.chmod(hooks_path, hooks_path.stat().st_mode & 0o777)
 
     if config_path.is_file():
@@ -1945,7 +2369,9 @@ def uninstall(codex_home: Path) -> int:
         backup = backup_path(deployment)
         deployment.rename(backup)
         log(f"deployment retained at {backup}")
-    log(f"removed {removed_skills} generated skills; preserved edited skills: {len(preserved_skills)}")
+    log(
+        f"removed {removed_skills} generated skills; preserved edited skills: {len(preserved_skills)}"
+    )
     log("removed generated Codex hooks, MCP entries, and agent roles")
     return 0
 
@@ -1965,6 +2391,10 @@ def install(
     enable_manual_compact: bool = DEFAULT_MANUAL_COMPACT_ENABLED,
     shared_model_cache_enabled: bool = DEFAULT_SHARED_MODEL_CACHE_ENABLED,
     tldr_model: str = DEFAULT_TLDR_MODEL,
+    rlm_output_threshold_kb: int = DEFAULT_RLM_OUTPUT_THRESHOLD_KB,
+    tldr_min_files: int = DEFAULT_TLDR_MIN_FILES,
+    tldr_min_code_kb: int = DEFAULT_TLDR_MIN_CODE_KB,
+    ast_grep_enabled: bool = DEFAULT_AST_GREP_ENABLED,
 ) -> int:
     source = source.resolve()
     codex_home.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -1985,6 +2415,9 @@ def install(
         previous_deployment,
         tldr_model=tldr_model,
         shared_model_cache_enabled=shared_model_cache_enabled,
+        rlm_output_threshold_kb=rlm_output_threshold_kb,
+        tldr_min_files=tldr_min_files,
+        tldr_min_code_kb=tldr_min_code_kb,
     )
     if setup_tldr:
         install_tldr_runtime(
@@ -1993,14 +2426,26 @@ def install(
             semantic_binary=tldr_semantic_binary,
         )
     elif enable_tldr_semantic or tldr_semantic_binary:
-        raise RuntimeError("TLDR semantic setup requires TLDR setup; remove --skip-tldr-setup")
+        raise RuntimeError(
+            "TLDR semantic setup requires TLDR setup; remove --skip-tldr-setup"
+        )
+    ast_grep_server = (
+        install_ast_grep_mcp(deployment)
+        if ast_grep_enabled
+        else {
+            "available": False,
+            "reason": "disabled by installer config",
+        }
+    )
     native_manifest = install_native_resources(
         source,
         deployment,
         codex_home,
         enable_subagents=enable_subagents,
         enable_dashboard=enable_dashboard,
+        ast_grep_server=ast_grep_server,
     )
+    native_manifest["mcp"]["ast_grep"] = ast_grep_server
     install_rlm_runtime(deployment, install_dependencies=setup_tldr or setup_runtime)
     config_path = codex_home / "config.toml"
     set_subagent_feature(config_path, enable_subagents)
@@ -2017,7 +2462,8 @@ def install(
         config_path, agent_catalog, enable_subagents
     )
     (deployment / "codex-native" / "native-manifest.json").write_text(
-        json.dumps(native_manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        json.dumps(native_manifest, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
     )
     (deployment / "install-config.json").write_text(
         json.dumps(
@@ -2030,7 +2476,15 @@ def install(
                     "shared_model_cache": {"enabled": shared_model_cache_enabled},
                 },
                 "handoff": {"manual_compact": {"enabled": enable_manual_compact}},
-                "tldr": {"model": tldr_model},
+                "rlm": {"output_threshold_kb": rlm_output_threshold_kb},
+                "mcp": {"ast_grep": {"enabled": ast_grep_enabled}},
+                "tldr": {
+                    "model": tldr_model,
+                    "scale": {
+                        "min_files": tldr_min_files,
+                        "min_code_kb": tldr_min_code_kb,
+                    },
+                },
             },
             indent=2,
             ensure_ascii=False,
@@ -2088,7 +2542,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, default=default_source())
     parser.add_argument("--codex-home", type=Path, default=default_codex_home())
-    parser.add_argument("--no-trust", action="store_true", help="do not call codex app-server to persist hashes")
+    parser.add_argument(
+        "--no-trust",
+        action="store_true",
+        help="do not call codex app-server to persist hashes",
+    )
     parser.add_argument(
         "--skip-runtime-setup",
         action="store_true",
@@ -2126,8 +2584,16 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         help=f"installer JSON config (default: {INSTALL_CONFIG_NAME} next to install.py)",
     )
-    parser.add_argument("--uninstall", action="store_true", help="remove generated registrations and retain files as a backup")
-    parser.add_argument("--skip-tldr-setup", action="store_true", help="do not install the deployment-local llm-tldr package")
+    parser.add_argument(
+        "--uninstall",
+        action="store_true",
+        help="remove generated registrations and retain files as a backup",
+    )
+    parser.add_argument(
+        "--skip-tldr-setup",
+        action="store_true",
+        help="do not install the deployment-local llm-tldr package",
+    )
     parser.add_argument(
         "--enable-tldr-semantic",
         action="store_true",
@@ -2164,12 +2630,18 @@ def main(argv: list[str] | None = None) -> int:
             enable_dashboard=options["dashboard_enabled"],
             setup_tldr=not args.skip_tldr_setup,
             enable_tldr_semantic=args.enable_tldr_semantic,
-            tldr_semantic_binary=args.tldr_semantic_binary.expanduser() if args.tldr_semantic_binary else None,
+            tldr_semantic_binary=args.tldr_semantic_binary.expanduser()
+            if args.tldr_semantic_binary
+            else None,
             enable_auto_learning=options["auto_learning_enabled"],
             enable_braintrust=options["braintrust_enabled"],
             enable_manual_compact=options["manual_compact_enabled"],
             shared_model_cache_enabled=options["shared_model_cache_enabled"],
             tldr_model=options["tldr_model"],
+            rlm_output_threshold_kb=options["rlm_output_threshold_kb"],
+            tldr_min_files=options["tldr_min_files"],
+            tldr_min_code_kb=options["tldr_min_code_kb"],
+            ast_grep_enabled=options["ast_grep_enabled"],
         )
     except Exception as error:  # noqa: BLE001  # CLI reports a concise installation error
         print(f"[codex-continuous] installation failed: {error}", file=sys.stderr)

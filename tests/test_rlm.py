@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import os
 import shlex
@@ -9,7 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -31,25 +32,73 @@ def load_harness():
 
 
 class RLMOutputTests(unittest.TestCase):
+    def test_default_threshold_is_48_kib(self) -> None:
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("CODEX_CONTINUOUS_RLM_OUTPUT_THRESHOLD", None)
+            self.assertEqual(rlm._threshold(), 48 * 1024)
+
+    def test_artifact_failure_falls_back_to_utf8_safe_raw_output(self) -> None:
+        class Capture:
+            def __init__(self) -> None:
+                self.buffer = io.BytesIO()
+
+            def write(self, value: str) -> int:
+                self.buffer.write(value.encode("utf-8"))
+                return len(value)
+
+            def flush(self) -> None:
+                pass
+
+        threshold = 48 * 1024
+        raw = b"x" * (threshold - 1) + "中".encode()
+        capture = Capture()
+        with tempfile.TemporaryDirectory() as temporary:
+            script = Path(temporary) / "command.sh"
+            script.write_text("#!/bin/sh\n", encoding="utf-8")
+            with (
+                patch.object(rlm, "_write_artifact", side_effect=OSError("disk full")),
+                patch.object(
+                    rlm.subprocess,
+                    "run",
+                    return_value=subprocess.CompletedProcess(
+                        [], 0, stdout=raw, stderr=b""
+                    ),
+                ),
+                patch.object(rlm.sys, "stdout", capture),
+            ):
+                result = rlm.execute_script(script, temporary, "fallback")
+        output = capture.buffer.getvalue()
+        self.assertEqual(result, 0)
+        self.assertTrue(output.startswith(b"x" * (threshold - 1)))
+        self.assertIn(b"[RLM fallback: truncated to 48KB due to storage error]", output)
+
     def test_pretool_bash_rewrites_command_to_runner(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            result = rlm.pretool_bash({
-                "cwd": str(root),
-                "session_id": "session/with unsafe chars",
-                "tool_name": "Bash",
-                "tool_input": {"command": "printf '%s\\n' hello"},
-            })
+            result = rlm.pretool_bash(
+                {
+                    "cwd": str(root),
+                    "session_id": "session/with unsafe chars",
+                    "tool_name": "Bash",
+                    "tool_input": {"command": "printf '%s\\n' hello"},
+                }
+            )
             specific = result["hookSpecificOutput"]
             wrapped = specific["updatedInput"]["command"]
             self.assertIn("--exec", wrapped)
-            self.assertTrue("rlm_runner.py" in wrapped or "codex_continuous_rlm.py" in wrapped)
+            self.assertTrue(
+                "rlm_runner.py" in wrapped or "codex_continuous_rlm.py" in wrapped
+            )
             script = Path(wrapped.split("--exec", 1)[1].split()[0].strip("'\""))
             self.assertTrue(script.is_file())
             self.assertEqual(stat.S_IMODE(script.stat().st_mode), 0o700)
             self.assertIn("printf", script.read_text())
             completed = subprocess.run(
-                shlex.split(wrapped), cwd=root, capture_output=True, text=True, check=False
+                shlex.split(wrapped),
+                cwd=root,
+                capture_output=True,
+                text=True,
+                check=False,
             )
             self.assertEqual(completed.returncode, 0)
             self.assertEqual(completed.stdout, "hello\n")
@@ -89,7 +138,9 @@ class RLMOutputTests(unittest.TestCase):
         old = datetime.now().timestamp() - 100
         os.utime(legacy, (old, old))
         try:
-            with patch.dict(os.environ, {"CODEX_CONTINUOUS_RLM_RETENTION_SECONDS": "1"}, clear=False):
+            with patch.dict(
+                os.environ, {"CODEX_CONTINUOUS_RLM_RETENTION_SECONDS": "1"}, clear=False
+            ):
                 rlm._cleanup_stale()
             self.assertFalse(legacy.exists())
         finally:
@@ -99,10 +150,19 @@ class RLMOutputTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             script = root / "cmd.sh"
-            script.write_text("#!/bin/sh\nprintf 'small\\n'\nprintf 'err\\n' >&2\nexit 7\n")
+            script.write_text(
+                "#!/bin/sh\nprintf 'small\\n'\nprintf 'err\\n' >&2\nexit 7\n"
+            )
             script.chmod(0o700)
             completed = subprocess.run(
-                [sys.executable, str(Path(__file__).parents[1] / "codex_continuous_rlm.py"), "--exec", str(script), "--session", "small"],
+                [
+                    sys.executable,
+                    str(Path(__file__).parents[1] / "codex_continuous_rlm.py"),
+                    "--exec",
+                    str(script),
+                    "--session",
+                    "small",
+                ],
                 capture_output=True,
                 text=True,
                 check=False,
@@ -115,19 +175,28 @@ class RLMOutputTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             script = root / "cmd.sh"
-            script.write_text("#!/bin/sh\nprintf 'x%.0s' $(seq 1 20000)\nprintf 'failure\\n' >&2\nexit 9\n")
+            script.write_text(
+                "#!/bin/sh\nprintf 'x%.0s' $(seq 1 60000)\nprintf 'failure\\n' >&2\nexit 9\n"
+            )
             script.chmod(0o700)
             env = os.environ.copy()
             env["CODEX_CONTINUOUS_RLM_BASH_ARTIFACT_DIR"] = str(root / "artifacts")
             completed = subprocess.run(
-                [sys.executable, str(Path(__file__).parents[1] / "codex_continuous_rlm.py"), "--exec", str(script), "--session", "large"],
+                [
+                    sys.executable,
+                    str(Path(__file__).parents[1] / "codex_continuous_rlm.py"),
+                    "--exec",
+                    str(script),
+                    "--session",
+                    "large",
+                ],
                 capture_output=True,
                 text=True,
                 env=env,
                 check=False,
             )
             self.assertEqual(completed.returncode, 9)
-            self.assertLess(len(completed.stdout.encode()), 4_000)
+            self.assertLess(len(completed.stdout.encode()), 48 * 1024)
             self.assertIn("artifact:", completed.stdout)
             self.assertNotIn("failure", completed.stderr)
             artifacts = list((root / "artifacts" / "large").glob("*.log"))
@@ -165,7 +234,12 @@ class RLMOutputTests(unittest.TestCase):
                 "jsonrpc": "2.0",
                 "id": 1,
                 "result": {
-                    "content": [{"type": "image", "data": "data:image/png;base64," + "A" * 20_000}],
+                    "content": [
+                        {
+                            "type": "image",
+                            "data": "data:image/png;base64," + "A" * 20_000,
+                        }
+                    ],
                     "dom": "<html>" + "x" * 20_000,
                 },
             }
@@ -227,7 +301,9 @@ class RLMOutputTests(unittest.TestCase):
             )
             updated = result["hookSpecificOutput"]["updatedInput"]["command"]
             self.assertIn("--exec", updated)
-            self.assertTrue("rlm_runner.py" in updated or "codex_continuous_rlm.py" in updated)
+            self.assertTrue(
+                "rlm_runner.py" in updated or "codex_continuous_rlm.py" in updated
+            )
 
 
 class RLMIntegrationTests(unittest.TestCase):
@@ -248,14 +324,29 @@ class RLMIntegrationTests(unittest.TestCase):
             self.assertEqual(manifest["rlm"]["version"], "ContinuousClaudeV4.7")
             self.assertGreaterEqual(len(manifest["rlm"]["skills"]["converted"]), 5)
             self.assertEqual(len(manifest["rlm"]["agents"]["agents"]), 2)
-            skill_names = {item["name"] for item in manifest["rlm"]["skills"]["converted"]}
+            skill_names = {
+                item["name"] for item in manifest["rlm"]["skills"]["converted"]
+            }
             self.assertIn("cc-codex-continuous-v47-research", skill_names)
-            self.assertTrue((deployment / "codex-native" / "rlm-skills-manifest.json").is_file())
-            converted_research = (root / "codex-home" / "skills" / "cc-codex-continuous-v47-research" / "SKILL.md").read_text()
+            self.assertTrue(
+                (deployment / "codex-native" / "rlm-skills-manifest.json").is_file()
+            )
+            converted_research = (
+                root
+                / "codex-home"
+                / "skills"
+                / "cc-codex-continuous-v47-research"
+                / "SKILL.md"
+            ).read_text()
             self.assertIn("ouros-harness", converted_research)
             self.assertNotIn("tools/ouros_harness.py", converted_research)
-            agent_prompts = [Path(item["path"]).read_text() for item in manifest["rlm"]["agents"]["agents"]]
-            self.assertTrue(all("tools/ouros_harness.py" not in prompt for prompt in agent_prompts))
+            agent_prompts = [
+                Path(item["path"]).read_text()
+                for item in manifest["rlm"]["agents"]["agents"]
+            ]
+            self.assertTrue(
+                all("tools/ouros_harness.py" not in prompt for prompt in agent_prompts)
+            )
 
     def test_rlm_hooks_are_added_to_existing_hook_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -265,13 +356,29 @@ class RLMIntegrationTests(unittest.TestCase):
             (source / ".claude" / "settings.json").write_text('{"hooks": {}}\n')
             deployment = root / "deployment"
             (deployment / "rlm" / "claude" / "hooks").mkdir(parents=True)
-            (deployment / "rlm" / "claude" / "hooks" / "tldr-read.mjs").write_text("// test\n")
+            (deployment / "rlm" / "claude" / "hooks" / "tldr-read.mjs").write_text(
+                "// test\n"
+            )
             (deployment / "codex_continuous_rlm.py").write_text("# test\n")
             manifest, generated = install.build_hooks(source, deployment)
-            self.assertEqual(manifest["hooks"]["codex_rlm_tldr_read"]["event"], "PreToolUse")
-            self.assertEqual(manifest["hooks"]["codex_rlm_bash_pretool"]["event"], "PreToolUse")
-            self.assertTrue(any("codex_rlm_bash_pretool" in json.dumps(hook) for hook in manifest["hooks"].values()))
-            self.assertFalse(any("codex_rlm" in json.dumps(group) for group in generated["hooks"].get("PostToolUse", [])))
+            self.assertEqual(
+                manifest["hooks"]["codex_rlm_tldr_read"]["event"], "PreToolUse"
+            )
+            self.assertEqual(
+                manifest["hooks"]["codex_rlm_bash_pretool"]["event"], "PreToolUse"
+            )
+            self.assertTrue(
+                any(
+                    "codex_rlm_bash_pretool" in json.dumps(hook)
+                    for hook in manifest["hooks"].values()
+                )
+            )
+            self.assertFalse(
+                any(
+                    "codex_rlm" in json.dumps(group)
+                    for group in generated["hooks"].get("PostToolUse", [])
+                )
+            )
 
     def test_cua_like_stdio_mcp_server_is_wrapped_in_generated_catalog(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -293,7 +400,11 @@ class RLMIntegrationTests(unittest.TestCase):
             )
             deployment = root / "deployment"
             manifest = install.install_native_resources(
-                source, deployment, root / "codex-home", enable_subagents=False, enable_dashboard=False
+                source,
+                deployment,
+                root / "codex-home",
+                enable_subagents=False,
+                enable_dashboard=False,
             )
             server = manifest["mcp"]["servers"][0]
             self.assertTrue(server["rlm_filter"])
@@ -305,21 +416,34 @@ class RLMIntegrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source_file = root / "large.py"
-            source_file.write_text("def function_%04d():\n    return %r\n" % (1, "x" * 2000) * 4_000)
+            source_file.write_text(
+                ("def function_{:04d}():\n    return {!r}\n".format(1, "x" * 2000))
+                * 4_000
+            )
             bin_dir = root / "bin"
             bin_dir.mkdir()
             fake_tldr = bin_dir / "tldr"
             fake_tldr.write_text(
                 "#!/bin/sh\n"
-                "printf '%s\\n' '{\"imports\": [], \"functions\": [{\"name\": \"main\", \"params\": [], \"line_number\": 1}]}'\n"
+                'if [ "$1" = scale ]; then\n'
+                "  printf '%s\\n' '{\"eligible\": true}'\n"
+                "else\n"
+                '  printf \'%s\\n\' \'{"imports": [], "functions": [{"name": "main", "params": [], "line_number": 1}]}\'\n'
+                "fi\n"
             )
             fake_tldr.chmod(0o755)
             payload = json.dumps(
-                {"tool_name": "Read", "tool_input": {"file_path": str(source_file)}}
+                {
+                    "tool_name": "Read",
+                    "cwd": str(root),
+                    "tool_input": {"file_path": str(source_file)},
+                }
             )
             env = os.environ.copy()
             env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
-            hook = Path(__file__).parents[1] / "rlm" / "claude" / "hooks" / "tldr-read.mjs"
+            hook = (
+                Path(__file__).parents[1] / "rlm" / "claude" / "hooks" / "tldr-read.mjs"
+            )
             completed = subprocess.run(
                 ["node", str(hook)],
                 input=payload,
@@ -342,11 +466,15 @@ class RLMIntegrationTests(unittest.TestCase):
             original = Path.cwd()
             os.chdir(root)
             try:
-                allowed = harness._call_write_file("continuum/research/findings.md", "findings")
+                allowed = harness._call_write_file(
+                    "continuum/research/findings.md", "findings"
+                )
                 denied = harness._call_write_file("outside.txt", "blocked")
                 self.assertTrue(allowed["ok"])
                 self.assertIn("denied", denied["error"])
-                card = harness._write_off_context_output("x" * 7_000, storage_dir=root / "outputs")
+                card = harness._write_off_context_output(
+                    "x" * 7_000, storage_dir=root / "outputs"
+                )
                 state = root / "state"
                 state.mkdir()
                 state_file = state / "session.bin"

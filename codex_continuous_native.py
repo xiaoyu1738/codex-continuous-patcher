@@ -5,15 +5,26 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
 from pathlib import Path
 from typing import Any
 
-
 NAMESPACE = "codex-continuous"
 SKILL_OWNER_FILE = ".codex-continuous-patcher.json"
+CODEX_SKILL_EXCLUDE = frozenset(
+    {
+        "github-search",
+        "firecrawl-scrape",
+        "morph-apply",
+        "morph-search",
+        "perplexity-search",
+        "nia-docs",
+        "repoprompt",
+    }
+)
 
 
 def _toml_string(value: str) -> str:
@@ -32,7 +43,7 @@ def _toml_value(value: Any) -> str:
     if isinstance(value, int):
         return str(value)
     if isinstance(value, float):
-        if value != value or value in {float("inf"), float("-inf")}:
+        if not math.isfinite(value):
             raise ValueError("non-finite floats are not valid generated MCP values")
         return repr(value)
     if isinstance(value, list):
@@ -41,18 +52,23 @@ def _toml_value(value: Any) -> str:
 
 
 def _frontmatter(content: str) -> tuple[dict[str, Any], str]:
-    match = re.match(r"\A---[ \t]*\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|\Z)", content, re.DOTALL)
+    match = re.match(
+        r"\A---[ \t]*\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|\Z)", content, re.DOTALL
+    )
     if not match:
         return {}, content
     raw, body = match.group(1), content[match.end() :]
     try:
         import yaml  # type: ignore[import-not-found]
-
-        metadata = yaml.safe_load(raw)
+    except ImportError:
+        yaml = None  # type: ignore[assignment]
+    if yaml is not None:
+        try:
+            metadata = yaml.safe_load(raw)
+        except yaml.YAMLError:
+            metadata = None
         if isinstance(metadata, dict):
             return metadata, body
-    except Exception:  # YAML is optional for the standalone installer.
-        pass
     metadata: dict[str, Any] = {}
     lines = raw.splitlines()
     index = 0
@@ -66,8 +82,14 @@ def _frontmatter(content: str) -> tuple[dict[str, Any], str]:
         if value in {"|", "|-", "|+", ">", ">-", ">+"}:
             block: list[str] = []
             index += 1
-            while index < len(lines) and (not lines[index] or lines[index][:1].isspace()):
-                block.append(lines[index][2:] if lines[index].startswith("  ") else lines[index].lstrip())
+            while index < len(lines) and (
+                not lines[index] or lines[index][:1].isspace()
+            ):
+                block.append(
+                    lines[index][2:]
+                    if lines[index].startswith("  ")
+                    else lines[index].lstrip()
+                )
                 index += 1
             separator = " " if value.startswith(">") else "\n"
             metadata[key] = separator.join(block).strip()
@@ -96,7 +118,9 @@ def _tree_digest(directory: Path) -> str:
         relative = path.relative_to(directory).as_posix().encode()
         digest.update(relative + b"\0")
         if path.is_symlink():
-            digest.update(b"link\0" + os.readlink(path).encode(errors="surrogateescape"))
+            digest.update(
+                b"link\0" + os.readlink(path).encode(errors="surrogateescape")
+            )
         elif path.is_file():
             digest.update(b"file\0" + path.read_bytes())
         elif path.is_dir():
@@ -120,7 +144,9 @@ def _skill_text(
 ) -> str:
     content = source_file.read_text(encoding="utf-8", errors="replace")
     metadata, body = _frontmatter(content)
-    description = str(metadata.get("description") or f"Continuous Claude skill: {original_name}")
+    description = str(
+        metadata.get("description") or f"Continuous Claude skill: {original_name}"
+    )
     compatibility = ""
     if original_name.lower().startswith("tldr-"):
         compatibility = (
@@ -142,9 +168,7 @@ def _skill_text(
         "---\n"
         f"name: {target_name}\n"
         f"description: {_toml_string(description)}\n"
-        "---\n"
-        + compatibility
-        + body
+        "---\n" + compatibility + body
     )
 
 
@@ -156,6 +180,7 @@ def convert_skills(
     skill_prefix: str = "cc-codex-continuous-v3",
     source_label: str = "Continuous-Claude-v3",
     manifest_name: str = "skills-manifest.json",
+    excluded_skills: frozenset[str] = CODEX_SKILL_EXCLUDE,
 ) -> dict[str, Any]:
     """Install complete skill directories, translating Codex frontmatter only."""
 
@@ -165,6 +190,7 @@ def convert_skills(
     target_root.mkdir(parents=True, exist_ok=True)
     converted: list[dict[str, str]] = []
     skipped: list[dict[str, str]] = []
+    pruned: list[dict[str, str]] = []
 
     for directory in sorted(source_skills.iterdir()) if source_skills.is_dir() else []:
         source_file = directory / "SKILL.md"
@@ -173,6 +199,11 @@ def convert_skills(
         content = source_file.read_text(encoding="utf-8", errors="replace")
         metadata, _ = _frontmatter(content)
         original_name = str(metadata.get("name") or directory.name)
+        if directory.name in excluded_skills or original_name in excluded_skills:
+            skipped.append(
+                {"source": original_name, "reason": "excluded from Codex skill set"}
+            )
+            continue
         name = f"{skill_prefix}-{_slug(original_name, 34)}"
         target_dir = target_skills / name
         if target_dir.exists():
@@ -181,8 +212,13 @@ def convert_skills(
                 suffix = hashlib.sha256(directory.name.encode()).hexdigest()[:8]
                 target_dir = target_skills / f"{name}-{suffix}"
                 name = target_dir.name
-                if target_dir.exists() and not (target_dir / SKILL_OWNER_FILE).is_file():
-                    skipped.append({"source": original_name, "reason": "name collision"})
+                if (
+                    target_dir.exists()
+                    and not (target_dir / SKILL_OWNER_FILE).is_file()
+                ):
+                    skipped.append(
+                        {"source": original_name, "reason": "name collision"}
+                    )
                     continue
             else:
                 try:
@@ -190,7 +226,12 @@ def convert_skills(
                 except (OSError, json.JSONDecodeError):
                     owner = {}
                 if owner.get("installed_hash") != _tree_digest(target_dir):
-                    skipped.append({"source": original_name, "reason": "managed skill has local edits"})
+                    skipped.append(
+                        {
+                            "source": original_name,
+                            "reason": "managed skill has local edits",
+                        }
+                    )
                     continue
 
         temporary = target_skills / f".{name}.staging"
@@ -198,12 +239,17 @@ def convert_skills(
             shutil.rmtree(temporary)
         shutil.copytree(source_file.parent, temporary, symlinks=True)
         (temporary / "SKILL.md").write_text(
-            _skill_text(source_file, name, original_name, source_label=source_label), encoding="utf-8"
+            _skill_text(source_file, name, original_name, source_label=source_label),
+            encoding="utf-8",
         )
         source_hash = _tree_digest(temporary)
         (temporary / SKILL_OWNER_FILE).write_text(
             json.dumps(
-                {"source": source_label, "source_name": directory.name, "installed_hash": source_hash},
+                {
+                    "source": source_label,
+                    "source_name": directory.name,
+                    "installed_hash": source_hash,
+                },
                 ensure_ascii=False,
                 indent=2,
             )
@@ -213,13 +259,53 @@ def convert_skills(
         if target_dir.exists():
             shutil.rmtree(target_dir)
         temporary.replace(target_dir)
-        converted.append({"source": original_name, "name": name, "path": str(target_dir / "SKILL.md")})
+        converted.append(
+            {
+                "source": original_name,
+                "name": name,
+                "path": str(target_dir / "SKILL.md"),
+            }
+        )
+
+    # Remove only unchanged directories previously generated by this installer
+    # for skills that are now excluded. User edits and unrelated skills remain.
+    if target_skills.is_dir():
+        for target_dir in target_skills.iterdir():
+            owner_path = target_dir / SKILL_OWNER_FILE
+            if not target_dir.is_dir() or not owner_path.is_file():
+                continue
+            try:
+                owner = json.loads(owner_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if (
+                owner.get("source") != source_label
+                or owner.get("source_name") not in excluded_skills
+            ):
+                continue
+            try:
+                unchanged = owner.get("installed_hash") == _tree_digest(target_dir)
+            except OSError:
+                unchanged = False
+            if unchanged:
+                shutil.rmtree(target_dir)
+                pruned.append(
+                    {"source": str(owner["source_name"]), "name": target_dir.name}
+                )
+            else:
+                skipped.append(
+                    {
+                        "source": str(owner["source_name"]),
+                        "reason": "excluded skill has local edits",
+                    }
+                )
 
     manifest = {
         "version": 1,
         "source": source_label,
         "skills": converted,
         "skipped": skipped,
+        "pruned": pruned,
         "resources_copied": True,
     }
     (target_root / manifest_name).write_text(
@@ -246,20 +332,38 @@ def convert_agents(
     skipped: list[dict[str, str]] = []
     if source_agents.is_dir():
         sources = sorted(source_agents.glob("*.md"))
-        sources.extend(path for path in sorted(source_agents.glob("*.json")) if not (source_agents / f"{path.stem}.md").is_file())
+        sources.extend(
+            path
+            for path in sorted(source_agents.glob("*.json"))
+            if not (source_agents / f"{path.stem}.md").is_file()
+        )
         for source in sources:
             if source.suffix.lower() == ".json":
                 try:
                     data = json.loads(source.read_text(encoding="utf-8"))
                 except (OSError, json.JSONDecodeError) as error:
-                    skipped.append({"source": source.stem, "reason": f"invalid JSON agent: {error}"})
+                    skipped.append(
+                        {
+                            "source": source.stem,
+                            "reason": f"invalid JSON agent: {error}",
+                        }
+                    )
                     continue
-                if not isinstance(data, dict) or not isinstance(data.get("prompt"), str):
-                    skipped.append({"source": source.stem, "reason": "JSON agent has no prompt string"})
+                if not isinstance(data, dict) or not isinstance(
+                    data.get("prompt"), str
+                ):
+                    skipped.append(
+                        {
+                            "source": source.stem,
+                            "reason": "JSON agent has no prompt string",
+                        }
+                    )
                     continue
                 metadata, body = data, data["prompt"]
             else:
-                metadata, body = _frontmatter(source.read_text(encoding="utf-8", errors="replace"))
+                metadata, body = _frontmatter(
+                    source.read_text(encoding="utf-8", errors="replace")
+                )
             if source_label == "ContinuousClaudeV4.7":
                 body = _adapt_rlm_runtime_text(body)
             original_name = str(metadata.get("name") or source.stem)
@@ -268,7 +372,9 @@ def convert_agents(
             if target.exists():
                 role = f"{role}-{hashlib.sha256(source.name.encode()).hexdigest()[:8]}"
                 target = target_agents / f"{role}.toml"
-            description = str(metadata.get("description") or f"Adapted role from {original_name}")
+            description = str(
+                metadata.get("description") or f"Adapted role from {original_name}"
+            )
             target.write_text(
                 "# Generated from a Continuous Claude agent prompt.\n"
                 f"developer_instructions = {_toml_string(body)}\n",
@@ -305,7 +411,9 @@ def _rewrite_server_path(value: str, codex_claude: Path | None) -> str:
     return str(codex_claude / "servers" / suffix)
 
 
-def _server_values(raw: dict[str, Any], codex_claude: Path | None) -> tuple[dict[str, Any] | None, str | None]:
+def _server_values(
+    raw: dict[str, Any], codex_claude: Path | None
+) -> tuple[dict[str, Any] | None, str | None]:
     result: dict[str, Any] = {}
     url = raw.get("url")
     command = raw.get("command")
@@ -316,13 +424,19 @@ def _server_values(raw: dict[str, Any], codex_claude: Path | None) -> tuple[dict
             result["http_headers"] = {str(k): str(v) for k, v in headers.items()}
         env_headers = raw.get("env_http_headers")
         if isinstance(env_headers, dict) and env_headers:
-            result["env_http_headers"] = {str(k): str(v) for k, v in env_headers.items()}
+            result["env_http_headers"] = {
+                str(k): str(v) for k, v in env_headers.items()
+            }
     elif isinstance(command, str) and command:
         result["command"] = _rewrite_server_path(command, codex_claude)
         args = raw.get("args", [])
-        if not isinstance(args, list) or not all(isinstance(item, (str, int, float, bool)) for item in args):
+        if not isinstance(args, list) or not all(
+            isinstance(item, (str, int, float, bool)) for item in args
+        ):
             return None, "unsupported argument format"
-        result["args"] = [_rewrite_server_path(str(item), codex_claude) for item in args]
+        result["args"] = [
+            _rewrite_server_path(str(item), codex_claude) for item in args
+        ]
         if result["command"] == "uvx" and result["args"][:1] == ["mcp-server-git"]:
             # Codex app-server is a long-lived daemon. Its cwd belongs to the
             # daemon, not to the active thread's project, so the upstream
@@ -331,7 +445,10 @@ def _server_values(raw: dict[str, Any], codex_claude: Path | None) -> tuple[dict
             # repository the server keeps the required repo_path argument on
             # each tool and can serve whichever project the thread is using.
             for index, item in enumerate(result["args"][:-1]):
-                if item == "--repository" and not Path(result["args"][index + 1]).is_absolute():
+                if (
+                    item == "--repository"
+                    and not Path(result["args"][index + 1]).is_absolute()
+                ):
                     del result["args"][index : index + 2]
                     break
         if (
@@ -340,10 +457,20 @@ def _server_values(raw: dict[str, Any], codex_claude: Path | None) -> tuple[dict
             and any("/servers/qlty/server.py" in item for item in result["args"])
         ):
             deployment = codex_claude.parent
-            script_index = next(i for i, item in enumerate(result["args"]) if "/servers/qlty/server.py" in item)
+            script_index = next(
+                i
+                for i, item in enumerate(result["args"])
+                if "/servers/qlty/server.py" in item
+            )
             script = result["args"][script_index]
             result["command"] = "uv"
-            result["args"] = ["run", "--project", str(deployment / "opc"), "python", script]
+            result["args"] = [
+                "run",
+                "--project",
+                str(deployment / "opc"),
+                "python",
+                script,
+            ]
         env = raw.get("env")
         if isinstance(env, dict) and env:
             result["env"] = {str(k): str(v) for k, v in env.items()}
@@ -361,7 +488,9 @@ def _mcp_filter_requested(source_name: str, raw: dict[str, Any]) -> bool:
     if "rlm_filter" in raw:
         return raw.get("rlm_filter") is True
     name = source_name.lower()
-    return any(marker in name for marker in ("cua", "computer-use", "browser", "chrome"))
+    return any(
+        marker in name for marker in ("cua", "computer-use", "browser", "chrome")
+    )
 
 
 def _wrap_mcp_stdio(
@@ -411,12 +540,17 @@ def convert_mcp_config(
     *,
     codex_claude: Path | None = None,
     mcp_filter_path: Path | None = None,
+    server_overrides: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Generate Codex-compatible MCP entries and a reviewable TOML catalog."""
 
     source_file = source_claude / "mcp_config.json"
     output_file = target_root / "mcp-servers.toml"
-    config = json.loads(source_file.read_text(encoding="utf-8")) if source_file.is_file() else {}
+    config = (
+        json.loads(source_file.read_text(encoding="utf-8"))
+        if source_file.is_file()
+        else {}
+    )
     servers = config.get("mcpServers", {}) if isinstance(config, dict) else {}
     converted: list[dict[str, Any]] = []
     skipped: list[dict[str, str]] = []
@@ -427,12 +561,19 @@ def convert_mcp_config(
     ]
     for source_name, raw in sorted(servers.items()):
         if not isinstance(raw, dict):
-            skipped.append({"source": str(source_name), "reason": "server entry is not a table"})
+            skipped.append(
+                {"source": str(source_name), "reason": "server entry is not a table"}
+            )
             continue
         values, reason = _server_values(raw, codex_claude)
         if values is None:
-            skipped.append({"source": str(source_name), "reason": reason or "unsupported server"})
+            skipped.append(
+                {"source": str(source_name), "reason": reason or "unsupported server"}
+            )
             continue
+        override = (server_overrides or {}).get(str(source_name))
+        if override:
+            values.update(override)
         name = f"{NAMESPACE}-{_slug(str(source_name))}"
         filtered = _wrap_mcp_stdio(str(source_name), raw, values, mcp_filter_path)
         item = {"source": str(source_name), "name": name, "enabled": values["enabled"]}
@@ -450,7 +591,9 @@ def convert_mcp_config(
     return manifest
 
 
-def convert_all(source_claude: Path, target_root: Path, *, codex_home: Path | None = None) -> dict[str, Any]:
+def convert_all(
+    source_claude: Path, target_root: Path, *, codex_home: Path | None = None
+) -> dict[str, Any]:
     target_root.mkdir(parents=True, exist_ok=True)
     return {
         "skills": convert_skills(source_claude, target_root, codex_home=codex_home),

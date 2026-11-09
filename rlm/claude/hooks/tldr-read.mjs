@@ -90,6 +90,17 @@ function formatNavMap(info, fileName) {
   return parts;
 }
 
+function largeRepository(project) {
+  try {
+    const out = execFileSync('tldr', ['scale', '--project', project], {
+      encoding: 'utf-8', timeout: 1500, stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    return JSON.parse(out).eligible === true;
+  } catch {
+    return false;
+  }
+}
+
 function main() {
   let data;
   try { data = JSON.parse(readFileSync(0, 'utf-8')); } catch { console.log('{}'); return; }
@@ -113,6 +124,11 @@ function main() {
   let fileSize;
   try { fileSize = statSync(filePath).size; } catch { console.log('{}'); return; }
   if (fileSize < SIZE_THRESHOLD) { console.log('{}'); return; }
+
+  // Structural TLDR is useful for large repositories, but its process and
+  // context overhead is counterproductive for small projects.
+  const project = data.cwd || toolInput.cwd || process.cwd();
+  if (!largeRepository(project)) { console.log('{}'); return; }
 
   // Run tldr extract — falls through if tldr not installed
   let info;

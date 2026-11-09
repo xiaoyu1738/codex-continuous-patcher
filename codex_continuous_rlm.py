@@ -24,12 +24,12 @@ import subprocess
 import sys
 import tempfile
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 RLM_VERSION = "4.7-adapted-pretool"
-DEFAULT_OUTPUT_THRESHOLD = 4_000
+DEFAULT_OUTPUT_THRESHOLD = 48 * 1024
 MAX_CARD_CHARS = 2_400
 MAX_PREVIEW_CHARS = 850
 MAX_TAIL_CHARS = 550
@@ -47,7 +47,11 @@ def _safe_name(value: Any, default: str = "unknown", limit: int = 80) -> str:
 
 def _threshold() -> int:
     try:
-        value = int(os.environ.get("CODEX_CONTINUOUS_RLM_OUTPUT_THRESHOLD", str(DEFAULT_OUTPUT_THRESHOLD)))
+        value = int(
+            os.environ.get(
+                "CODEX_CONTINUOUS_RLM_OUTPUT_THRESHOLD", str(DEFAULT_OUTPUT_THRESHOLD)
+            )
+        )
     except ValueError:
         value = DEFAULT_OUTPUT_THRESHOLD
     return max(256, value)
@@ -60,7 +64,11 @@ def _artifact_root() -> Path:
 
 def _retention_seconds() -> int:
     try:
-        value = int(os.environ.get("CODEX_CONTINUOUS_RLM_RETENTION_SECONDS", str(DEFAULT_RETENTION_SECONDS)))
+        value = int(
+            os.environ.get(
+                "CODEX_CONTINUOUS_RLM_RETENTION_SECONDS", str(DEFAULT_RETENTION_SECONDS)
+            )
+        )
     except ValueError:
         value = DEFAULT_RETENTION_SECONDS
     return max(1, value)
@@ -68,7 +76,12 @@ def _retention_seconds() -> int:
 
 def _max_artifact_bytes() -> int:
     try:
-        value = int(os.environ.get("CODEX_CONTINUOUS_RLM_MAX_ARTIFACT_BYTES", str(DEFAULT_MAX_ARTIFACT_BYTES)))
+        value = int(
+            os.environ.get(
+                "CODEX_CONTINUOUS_RLM_MAX_ARTIFACT_BYTES",
+                str(DEFAULT_MAX_ARTIFACT_BYTES),
+            )
+        )
     except ValueError:
         value = DEFAULT_MAX_ARTIFACT_BYTES
     return max(1, value)
@@ -97,7 +110,9 @@ def _cleanup_stale() -> None:
         return
     candidates: list[tuple[Path, float, int]] = []
     try:
-        paths = [path for path in root.rglob("*") if path.is_file() and not path.is_symlink()]
+        paths = [
+            path for path in root.rglob("*") if path.is_file() and not path.is_symlink()
+        ]
     except OSError:
         return
     for path in paths:
@@ -128,7 +143,11 @@ def _cleanup_stale() -> None:
     # runner root itself; it is cheap and keeps the next invocation simple.
     try:
         directories = sorted(
-            (path for path in root.rglob("*") if path.is_dir() and not path.is_symlink()),
+            (
+                path
+                for path in root.rglob("*")
+                if path.is_dir() and not path.is_symlink()
+            ),
             key=lambda path: len(path.parts),
             reverse=True,
         )
@@ -172,7 +191,9 @@ def _write_command_script(command: str) -> Path:
 def _wrapper_command(command: str, cwd: str, session_id: str) -> str:
     script = _write_command_script(command)
     installed_runner = Path(__file__).resolve().parent / "rlm" / "rlm_runner.py"
-    runner = installed_runner if installed_runner.is_file() else Path(__file__).resolve()
+    runner = (
+        installed_runner if installed_runner.is_file() else Path(__file__).resolve()
+    )
     argv = [
         sys.executable,
         str(runner),
@@ -190,12 +211,23 @@ def pretool_bash(data: dict[str, Any]) -> dict[str, Any]:
     """Return a PreToolUse updatedInput that executes Bash through the runner."""
 
     tool_name = str(data.get("tool_name") or data.get("name") or "")
-    if tool_name.lower() not in {"bash", "shell", "exec", "exec_command", "command", "terminal"}:
+    if tool_name.lower() not in {
+        "bash",
+        "shell",
+        "exec",
+        "exec_command",
+        "command",
+        "terminal",
+    }:
         return {}
     tool_input = data.get("tool_input")
     if not isinstance(tool_input, dict):
         return {}
-    command = tool_input.get("command") or tool_input.get("cmd") or tool_input.get("shell_command")
+    command = (
+        tool_input.get("command")
+        or tool_input.get("cmd")
+        or tool_input.get("shell_command")
+    )
     if not isinstance(command, str) or not command.strip():
         return {}
     # Never wrap the runner itself. This also makes the hook idempotent when
@@ -241,7 +273,7 @@ def _artifact_path(session_id: str, payload: bytes) -> Path:
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(root, 0o700)
     digest = hashlib.sha256(payload).hexdigest()
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
     return root / f"{stamp}-{digest[:16]}.log"
 
 
@@ -297,8 +329,7 @@ def execute_script(script: Path, cwd: str | None, session_id: str) -> int:
             ["/bin/sh", str(script)],
             cwd=cwd or None,
             stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             check=False,
         )
         stdout = completed.stdout or b""
@@ -306,7 +337,9 @@ def execute_script(script: Path, cwd: str | None, session_id: str) -> int:
         combined = stdout + stderr
         if len(combined) > _threshold():
             try:
-                path, digest = _write_artifact(session_id, b"[stdout]\n" + stdout + b"\n[stderr]\n" + stderr)
+                path, digest = _write_artifact(
+                    session_id, b"[stdout]\n" + stdout + b"\n[stderr]\n" + stderr
+                )
                 sys.stdout.write(
                     _summary_card(
                         path=path,
@@ -319,11 +352,17 @@ def execute_script(script: Path, cwd: str | None, session_id: str) -> int:
                     + "\n"
                 )
             except OSError:
-                # Preserve the bounded boundary even if /tmp is unavailable.
-                sys.stdout.write(
-                    f"[RLM] command output exceeded {_threshold():,} bytes; artifact storage failed; "
-                    f"returncode: {completed.returncode}\n"
+                # Preserve the command result when the artifact directory is
+                # unavailable.  Work with bytes first so a cut through a
+                # multibyte UTF-8 sequence cannot raise during fallback.
+                fallback = (stdout + stderr)[: _threshold()]
+                sys.stdout.buffer.write(fallback)
+                if fallback and not fallback.endswith(b"\n"):
+                    sys.stdout.buffer.write(b"\n")
+                sys.stdout.buffer.write(
+                    b"[RLM fallback: truncated to 48KB due to storage error]\n"
                 )
+                sys.stdout.buffer.flush()
         else:
             sys.stdout.buffer.write(stdout)
             sys.stdout.flush()
@@ -352,10 +391,14 @@ def main(argv: list[str] | None = None) -> int:
             result = pretool_bash(_read_input())
         except (OSError, TypeError, ValueError):
             result = {}
-        sys.stdout.write(json.dumps(result, ensure_ascii=False, separators=(",", ":")) + "\n")
+        sys.stdout.write(
+            json.dumps(result, ensure_ascii=False, separators=(",", ":")) + "\n"
+        )
         return 0
     if args.script:
-        return execute_script(args.script.expanduser().resolve(), args.cwd, _safe_name(args.session))
+        return execute_script(
+            args.script.expanduser().resolve(), args.cwd, _safe_name(args.session)
+        )
     parser.error("use --pretool-bash or --exec SCRIPT")
     return 2
 

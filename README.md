@@ -169,7 +169,9 @@ ouros-harness --file /tmp/research.py \
   --storage continuum/rlm/sessions
 ```
 
-Ouros session 会持久化原始变量，`--load` 可恢复，`--fork` 可分支。大型 stdout 会写入 `continuum/rlm/sessions/outputs/`，终端只显示 artifact 路径、摘要和校验值。Bash runner 的边界发生在 PreToolUse；大型代码文件则由 v4.7 `tldr-read.mjs` 生成结构导航并限制首轮读取，精确内容通过 `offset`/`limit` 再取。当前 `.sh` 命令返回后立即删除；孤儿脚本和 artifact 会在下次 runner 启动时按默认 24 小时 TTL 清理，并受 256 MiB 总量上限约束。PostToolUse 不再承担 RLM 摘要逻辑。
+Ouros session 会持久化原始变量，`--load` 可恢复，`--fork` 可分支。Bash 输出超过默认 48 KiB 时会写入 artifact，终端只显示路径、摘要和校验值；如果 artifact 写盘失败，则直接输出前 48 KiB 并附带 fallback 标记，保留命令结果。Bash runner 的边界发生在 PreToolUse；大型仓库（代码文件数达到 80 个或源码达到 512 KiB）中的大型代码文件由 v4.7 `tldr-read.mjs` 生成结构导航并限制首轮读取，小仓库直接使用原生 Read。当前 `.sh` 命令返回后立即删除；孤儿脚本和 artifact 会在下次 runner 启动时按默认 24 小时 TTL 清理，并受 256 MiB 总量上限约束。PostToolUse 不再承担 RLM 摘要逻辑。
+
+安装配置中的 `rlm.output_threshold_kb`、`tldr.scale.min_files`、`tldr.scale.min_code_kb` 和 `mcp.ast_grep.enabled` 分别控制 RLM 输出边界、自动 TLDR 的仓库规模门槛和 AST MCP。AST MCP 只有在本地安装及真实 MCP 结构搜索 smoke test 都成功后才会写入 Codex 配置。
 
 对 CUA/browser 类 stdio MCP server，安装器会在生成的 MCP catalog 中接入 `codex_continuous_mcp_filter.py`：它在 JSON-RPC 返回给 MCP client 前移除 `data:image/...;base64` 内容并裁剪超长文本。远程 HTTP MCP 不能由这个 stdio proxy 拦截，需要在 MCP 网关或服务端做同样的过滤。
 
